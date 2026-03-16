@@ -1,0 +1,85 @@
+name = "murry-ai"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "production"
+APP_NAME = "MurryAI"
+
+# ──────────────────────────────────────────
+# Durable Objects (persistent stateful sessions)
+# ──────────────────────────────────────────
+[[durable_objects.bindings]]
+name = "CONVERSATION_DO"
+class_name = "ConversationDurableObject"
+
+[[durable_objects.bindings]]
+name = "PROJECT_DO"
+class_name = "ProjectDurableObject"
+
+# ──────────────────────────────────────────
+# D1 Database (relational metadata store)
+# Run: wrangler d1 create murry-ai-db
+# ──────────────────────────────────────────
+[[d1_databases]]
+binding = "DB"
+database_name = "murry-ai-db"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+# ──────────────────────────────────────────
+# R2 Bucket (document storage)
+# Run: wrangler r2 bucket create murry-ai-documents
+# ──────────────────────────────────────────
+[[r2_buckets]]
+binding = "DOCUMENTS_BUCKET"
+bucket_name = "murry-ai-documents"
+
+# ──────────────────────────────────────────
+# Vectorize (semantic vector search)
+# Run: wrangler vectorize create murry-ai-vectors --dimensions=768 --metric=cosine
+# ──────────────────────────────────────────
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "murry-ai-vectors"
+
+# ──────────────────────────────────────────
+# Workers AI (embeddings, vision, OCR)
+# ──────────────────────────────────────────
+[ai]
+binding = "AI"
+
+# ──────────────────────────────────────────
+# KV Namespace (caching & session state)
+# Run: wrangler kv namespace create murry-ai-cache
+# ──────────────────────────────────────────
+[[kv_namespaces]]
+binding = "KV_CACHE"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+# ──────────────────────────────────────────
+# Workflows (background processing pipelines)
+# ──────────────────────────────────────────
+[[workflows]]
+binding = "DOCUMENT_INGESTION"
+name = "document-ingestion-workflow"
+class_name = "DocumentIngestionWorkflow"
+
+[[workflows]]
+binding = "PROPOSAL_ANALYSIS"
+name = "proposal-analysis-workflow"
+class_name = "ProposalAnalysisWorkflow"
+
+# ──────────────────────────────────────────
+# Durable Object Migrations
+# ──────────────────────────────────────────
+[[migrations]]
+tag = "v1"
+new_classes = ["ConversationDurableObject", "ProjectDurableObject"]
+
+# ──────────────────────────────────────────
+# Static assets (the React frontend)
+# ──────────────────────────────────────────
+[assets]
+directory = "./public"
+binding = "ASSETS"
