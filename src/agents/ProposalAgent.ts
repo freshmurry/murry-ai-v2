@@ -48,7 +48,7 @@ const AGENT_TOOLS: AgentTool[] = [
       type: 'object',
       properties: {
         document_id: { type: 'string', description: 'The document ID' },
-        page?: { type: 'number', description: 'Optional: get content from a specific page' },
+        page: { type: 'number', description: 'Optional: get content from a specific page' },
       },
       required: ['document_id'],
     },
