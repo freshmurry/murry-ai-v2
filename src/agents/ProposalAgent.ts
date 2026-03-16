@@ -599,9 +599,24 @@ export async function runAgent(
   mode: string = 'general',
   onStream: StreamCallback,
 ): Promise<Message> {
-  const client = new AnthropicClient(env.ANTHROPIC_API_KEY);
   const messageId = generateId('msg');
   const systemPrompt = SYSTEM_PROMPTS[mode as keyof typeof SYSTEM_PROMPTS] ?? SYSTEM_PROMPTS.general;
+
+  if (!env.ANTHROPIC_API_KEY) {
+    const fallback = `I cannot process this request because the AI API key is not configured. Please set ANTHROPIC_API_KEY and retry.`;
+    const finalMessage: Message = {
+      id: messageId,
+      conversation_id: conversationId,
+      role: 'assistant',
+      content: fallback,
+      created_at: now(),
+    };
+    await onStream({ type: 'chunk', content: fallback, message_id: messageId });
+    await onStream({ type: 'message_complete', message: finalMessage });
+    return finalMessage;
+  }
+
+  const client = new AnthropicClient(env.ANTHROPIC_API_KEY);
 
   // Build message history including the new user message
   const messages: ClaudeMessage[] = [

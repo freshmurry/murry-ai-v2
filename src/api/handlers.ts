@@ -280,11 +280,22 @@ export async function handleQA(request: Request, env: Env): Promise<Response> {
     return apiJson({ success: true, data: result.results });
   }
 
+  if (request.method === 'POST' && !qaId) {
+    const body = await request.json() as Partial<QAPair>;
+    if (!body.project_id || !body.question) return apiError('project_id and question are required', 400);
+    const id = generateId('qa');
+    await env.DB.prepare(`INSERT INTO qa_pairs (id, project_id, document_id, question, answer, answer_draft, status, category, section_reference, page_reference, priority, assignee) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(id, body.project_id, body.document_id ?? null, body.question, body.answer ?? null, body.answer_draft ?? null, body.status ?? 'pending', body.category ?? null, body.section_reference ?? null, body.page_reference ?? null, body.priority ?? 'medium', body.assignee ?? null)
+      .run();
+    const pair = await env.DB.prepare('SELECT * FROM qa_pairs WHERE id = ?').bind(id).first<QAPair>();
+    return apiJson({ success: true, data: pair }, 201);
+  }
+
   if (request.method === 'PUT' && qaId) {
     const body = await request.json() as Partial<QAPair>;
     const fields: string[] = [];
     const values: unknown[] = [];
-    const allowed = ['answer', 'answer_draft', 'status', 'category', 'priority', 'section_reference', 'assignee'];
+    const allowed = ['answer', 'answer_draft', 'status', 'category', 'priority', 'section_reference', 'assignee', 'question'];
     for (const field of allowed) {
       if (field in body) { fields.push(`${field} = ?`); values.push((body as Record<string, unknown>)[field]); }
     }

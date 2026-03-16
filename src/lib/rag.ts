@@ -19,11 +19,15 @@ export async function generateEmbedding(
     text: [text.substring(0, 2048)], // Model has input limit
   });
 
-  if (!result.data || result.data.length === 0) {
+  const raw = (result as any).data ?? (result as any).output;
+  const embedding = Array.isArray(raw)
+    ? (Array.isArray(raw[0]) ? raw[0] as number[] : raw as number[])
+    : undefined;
+  if (!embedding || !Array.isArray(embedding) || embedding.length === 0) {
     throw new Error('Failed to generate embedding');
   }
 
-  return result.data[0];
+  return embedding as number[];
 }
 
 /** Generate embeddings for multiple texts in parallel */
@@ -69,7 +73,7 @@ export async function indexChunk(
     {
       id: vectorId,
       values: embedding,
-      metadata: metadata as Record<string, string | number | boolean>,
+      metadata: metadata as unknown as Record<string, string | number | boolean>,
     },
   ]);
 }
@@ -111,7 +115,7 @@ export async function semanticSearch(
 
   const result = await env.VECTORIZE.query(embedding, {
     topK: options.top_k ?? 20,
-    filter: Object.keys(filter).length > 0 ? filter : undefined,
+    filter: Object.keys(filter).length > 0 ? (filter as unknown as VectorizeVectorMetadataFilter) : undefined,
     returnMetadata: 'all',
   });
 

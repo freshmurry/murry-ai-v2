@@ -390,7 +390,7 @@ export async function extractTextFromBuffer(
 
     default:
       // Attempt UTF-8 decode as fallback
-      return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+      return new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(bytes);
   }
 }
 
@@ -442,7 +442,7 @@ function extractTextFromPdf(bytes: Uint8Array): string {
 /** Extract text from DOCX (ZIP + XML) */
 async function extractTextFromDocx(bytes: Uint8Array): Promise<string> {
   // DOCX is a ZIP file - find word/document.xml
-  const zipText = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  const zipText = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(bytes);
 
   // Simple XML text extraction from document.xml content
   // Find w:t (Word text) elements
@@ -467,7 +467,7 @@ async function extractTextFromDocx(bytes: Uint8Array): Promise<string> {
 
 /** Extract text from PPTX slides */
 async function extractTextFromPptx(bytes: Uint8Array): Promise<string> {
-  const zipText = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  const zipText = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(bytes);
 
   // Find slide content (a:t elements in DrawingML)
   const atRegex = /<a:t[^>]*>([\s\S]*?)<\/a:t>/g;
@@ -483,7 +483,7 @@ async function extractTextFromPptx(bytes: Uint8Array): Promise<string> {
 
 /** Extract text from XLSX spreadsheet */
 async function extractTextFromXlsx(bytes: Uint8Array): Promise<string> {
-  const zipText = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  const zipText = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(bytes);
 
   // Find cell values (v elements and inlineStr)
   const cellRegex = /<(?:v|t)[^>]*>([\s\S]*?)<\/(?:v|t)>/g;

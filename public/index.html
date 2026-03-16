@@ -617,9 +617,11 @@ function MessageBubble({ message, isStreaming, streamContent, toolCalls }) {
 function ChatPanel({ conversationId, projectId, mode, onNewConversation }) {
   const { messages, streaming, streamBuffer, toolCalls, pendingTask, sendMessage, approveTask } = useChat(conversationId);
   const [input, setInput] = useState('');
+  const [uploading, setUploading] = useState(false);
   const [selectedMode, setSelectedMode] = useState(mode || 'general');
   const bottomRef = useRef();
   const textareaRef = useRef();
+  const fileInputRef = useRef();
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, streamBuffer]);
 
@@ -628,6 +630,31 @@ function ChatPanel({ conversationId, projectId, mode, onNewConversation }) {
     sendMessage(input.trim(), projectId, selectedMode);
     setInput('');
     textareaRef.current?.focus();
+  };
+
+  const uploadFromChat = async (file) => {
+    if (!file || !projectId || uploading) return;
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      form.append('project_id', projectId);
+      const result = await api('POST', '/api/upload', form);
+      setInput(prev => `${prev}\n[Uploaded ${file.name} to docs]`);
+      setTimeout(() => setInput(''), 2500);
+      return result;
+    } catch (err) {
+      console.error(err);
+      return null;
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const onFileSelected = (e) => {
+    const file = e.target.files?.[0];
+    if (file) uploadFromChat(file);
+    e.target.value = '';
   };
 
   const modes = [
@@ -700,7 +727,18 @@ function ChatPanel({ conversationId, projectId, mode, onNewConversation }) {
     ),
     // Input area
     h('div', { className: 'border-t border-[hsl(var(--border))] p-4 bg-[hsl(var(--sidebar))]' },
-      h('div', { className: 'flex gap-3 items-end bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-2xl p-3 focus-within:border-[hsl(var(--primary))] transition-colors' },
+      h('div', { className: 'flex gap-2 items-center bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-2xl p-2.5 focus-within:border-[hsl(var(--primary))] transition-colors' },
+        h('button', {
+          type: 'button',
+          onClick: () => fileInputRef.current?.click(),
+          className: 'text-[hsl(var(--muted))] hover:text-[hsl(var(--fg))] p-2 rounded-md transition-all'
+        }, h(Icon, { name: 'upload', size: 16 })),
+        h('input', {
+          ref: fileInputRef,
+          type: 'file',
+          className: 'hidden',
+          onChange: onFileSelected
+        }),
         h('textarea', {
           ref: textareaRef,
           value: input,
@@ -714,9 +752,9 @@ function ChatPanel({ conversationId, projectId, mode, onNewConversation }) {
         h(Btn, {
           variant: 'primary', size: 'icon',
           onClick: send,
-          disabled: !input.trim() || streaming,
+          disabled: (!input.trim() && !uploading) || streaming,
           className: 'flex-shrink-0 rounded-xl'
-        }, h(Icon, { name: 'send', size: 16 }))
+        }, uploading ? '…' : h(Icon, { name: 'send', size: 16 }))
       ),
       h('p', { className: 'text-center text-xs text-[hsl(var(--muted))] mt-2' }, 'Enter to send • Shift+Enter for new line • Agents search your knowledge base automatically')
     )
@@ -801,6 +839,7 @@ function QAPanel({ projectId }) {
   const [filter, setFilter] = useState('all');
   const [editing, setEditing] = useState(null);
   const [editText, setEditText] = useState('');
+  const [newQA, setNewQA] = useState({ question: '', answer: '', priority: 'medium', category: '' });
 
   const load = () => {
     setLoading(true);
@@ -817,6 +856,20 @@ function QAPanel({ projectId }) {
     load();
   };
 
+  const createQA = async () => {
+    if (!newQA.question.trim()) return;
+    await POST('/api/qa', {
+      project_id: projectId,
+      question: newQA.question,
+      answer: newQA.answer,
+      status: 'pending',
+      priority: newQA.priority,
+      category: newQA.category,
+    });
+    setNewQA({ question: '', answer: '', priority: 'medium', category: '' });
+    load();
+  };
+
   const statusColors = { pending: '🟡', draft: '🔵', answered: '🟢', reviewed: '✅', approved: '🏆' };
   const filters = ['all', 'pending', 'draft', 'answered', 'reviewed'];
 
@@ -826,6 +879,32 @@ function QAPanel({ projectId }) {
         h('h3', { className: 'font-semibold text-sm' }, `Q&A Tracker (${pairs.length})`),
         h(Btn, { variant: 'ghost', size: 'icon', onClick: load }, h(Icon, { name: 'refresh', size: 14 }))
       ),
+      h('div', { className: 'grid grid-cols-1 gap-2 md:grid-cols-4 mb-3' },
+        h('input', {
+          value: newQA.question,
+          onChange: e => setNewQA(prev => ({ ...prev, question: e.target.value })),
+          placeholder: 'Add new question...',
+          className: 'col-span-2 bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-2 py-2 text-xs'
+        }),
+        h('input', {
+          value: newQA.category,
+          onChange: e => setNewQA(prev => ({ ...prev, category: e.target.value })),
+          placeholder: 'Category',
+          className: 'bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-2 py-2 text-xs'
+        }),
+        h('select', {
+          value: newQA.priority,
+          onChange: e => setNewQA(prev => ({ ...prev, priority: e.target.value })),
+          className: 'bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-2 py-2 text-xs'
+        }, ['low', 'medium', 'high', 'critical'].map(p => h('option', { key: p, value: p }, p))),
+        h(Btn, { size: 'sm', variant: 'primary', onClick: createQA, className: 'whitespace-nowrap' }, h(Icon, { name: 'plus', size: 12 }), ' Add Q&A')
+      ),
+      h('textarea', {
+        value: newQA.answer,
+        onChange: e => setNewQA(prev => ({ ...prev, answer: e.target.value })),
+        placeholder: 'Add a rich answer draft (markdown supported)...',
+        className: 'w-full bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-2 py-2 text-xs min-h-[64px] resize-vertical mb-2'
+      }),
       h('div', { className: 'flex gap-1.5 flex-wrap' },
         filters.map(f => h('button', {
           key: f,
@@ -859,13 +938,19 @@ function QAPanel({ projectId }) {
             ),
             (pair.answer || pair.answer_draft) && editing !== pair.id && h('div', {
               className: 'mt-2 pt-2 border-t border-[hsl(var(--border))] text-xs text-[hsl(var(--muted))] leading-relaxed'
-            }, (pair.answer || pair.answer_draft)?.substring(0, 200) + ((pair.answer || pair.answer_draft)?.length > 200 ? '…' : '')),
-            editing === pair.id && h('div', { className: 'mt-2' },
+            }, h(MD, { content: pair.answer || pair.answer_draft || '' })),            editing === pair.id && h('div', { className: 'mt-2' },
+              h('div', { className: 'flex flex-wrap gap-1 mb-1 text-[hsl(var(--muted))]' },
+                ['**Bold**','*Italic*','> Quote','- List','`Code`','![Image](url)','| Table |','---'].map(s => h('button', {
+                  key: s,
+                  onClick: () => setEditText(prev => `${prev}${s}\n`),
+                  className: 'text-xs border border-[hsl(var(--border))] px-2 py-1 rounded-lg hover:border-[hsl(var(--primary))]'
+                }, s))
+              ),
               h('textarea', {
                 value: editText,
                 onChange: e => setEditText(e.target.value),
-                className: 'w-full bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg p-2 text-xs resize-y min-h-[80px] focus:border-[hsl(var(--primary))] outline-none',
-                rows: 4
+                className: 'w-full bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg p-2 text-xs resize-y min-h-[100px] focus:border-[hsl(var(--primary))] outline-none',
+                rows: 5
               }),
               h('div', { className: 'flex gap-2 mt-2' },
                 h(Btn, { size: 'sm', variant: 'success', onClick: () => saveAnswer(pair.id) }, 'Save'),
@@ -879,6 +964,91 @@ function QAPanel({ projectId }) {
               }, h(Icon, { name: 'doc', size: 12 }), 'Edit Answer')
             )
           ))
+    )
+  );
+}
+
+function BrainPanel({ projectId }) {
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [newEntry, setNewEntry] = useState({ type: 'fact', title: '', content: '' });
+
+  const load = () => {
+    setLoading(true);
+    GET(`/api/brain?project_id=${projectId}`).then(r => { setEntries(r.data); setLoading(false); }).catch(() => setLoading(false));
+  };
+
+  useEffect(load, [projectId]);
+
+  const save = async () => {
+    if (!newEntry.title.trim() || !newEntry.content.trim()) return;
+    await POST('/api/brain', { project_id: projectId, type: newEntry.type, title: newEntry.title, content: newEntry.content });
+    setNewEntry({ type: 'fact', title: '', content: '' });
+    load();
+  };
+
+  return h('div', { className: 'flex flex-col h-full' },
+    h('div', { className: 'px-4 py-3 border-b border-[hsl(var(--border))]' },
+      h('div', { className: 'flex items-center justify-between' },
+        h('h3', { className: 'font-semibold text-sm' }, `Brain / Memory (${entries.length})`),
+        h(Btn, { variant: 'ghost', size: 'icon', onClick: load }, h(Icon, { name: 'refresh', size: 14 }))
+      ),
+      h('div', { className: 'mt-2 grid grid-cols-3 gap-2 text-xs' },
+        h('select', {
+          value: newEntry.type,
+          className: 'bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-2 py-1 text-xs',
+          onChange: e => setNewEntry(prev => ({ ...prev, type: e.target.value }))
+        }, ['fact', 'preference', 'process', 'contact', 'insight'].map(t => h('option', { key: t, value: t }, t))),
+        h('input', {
+          value: newEntry.title,
+          onChange: e => setNewEntry(prev => ({ ...prev, title: e.target.value })),
+          placeholder: 'Title',
+          className: 'col-span-2 bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-2 py-1 text-xs'
+        })
+      ),
+      h('textarea', {
+        value: newEntry.content,
+        onChange: e => setNewEntry(prev => ({ ...prev, content: e.target.value })),
+        placeholder: 'Write knowledge entry details here...',
+        className: 'w-full mt-2 bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-2 py-2 text-xs min-h-[80px] resize-vertical'
+      }),
+      h('div', { className: 'mt-2 flex items-center justify-end' }, h(Btn, { size: 'sm', variant: 'primary', onClick: save }, 'Save to Brain'))
+    ),
+    h('div', { className: 'flex-1 overflow-y-auto p-3 space-y-2' },
+      loading ? [1,2,3].map(i => h('div', { key: i, className: 'shimmer h-16 rounded-xl' })) :
+      entries.length === 0 ? h('div', { className: 'text-center py-12 text-[hsl(var(--muted))]' }, 'No brain entries yet.') :
+      entries.map(entry => h('div', { key: entry.id, className: 'border border-[hsl(var(--border))] rounded-xl p-3 bg-[hsl(var(--card))]' },
+        h('div', { className: 'flex items-center justify-between text-xs text-[hsl(var(--muted))]' },
+          h('span', null, entry.type.toUpperCase()),
+          h('span', null, new Date(entry.updated_at).toLocaleDateString())
+        ),
+        h('h4', { className: 'font-semibold text-sm mt-1' }, entry.title),
+        h('p', { className: 'text-xs mt-1 whitespace-pre-wrap' }, entry.content)
+      ))
+    )
+  );
+}
+
+function SettingsPanel({ projectId }) {
+  const [settings, setSettings] = useState({ proposal_template: 'Standard', default_answer_style: 'formal', quote_format: 'bullets' });
+
+  return h('div', { className: 'flex flex-col h-full' },
+    h('div', { className: 'p-4 border-b border-[hsl(var(--border))]' },
+      h('h3', { className: 'font-semibold text-sm' }, 'Workspace Settings'),
+      h('p', { className: 'text-xs text-[hsl(var(--muted))] mt-1' }, 'Lightweight settings for project-level knowledge operations.')
+    ),
+    h('div', { className: 'flex-1 overflow-y-auto p-4 space-y-3' },
+      ['proposal_template','default_answer_style','quote_format'].map(key =>
+        h('div', { key, className: 'space-y-1' },
+          h('label', { className: 'text-xs font-medium text-[hsl(var(--muted))]' }, key.replace('_', ' ').toUpperCase()),
+          h('input', {
+            value: settings[key],
+            onChange: e => setSettings(prev => ({ ...prev, [key]: e.target.value })),
+            className: 'w-full bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-2 py-2 text-xs'
+          })
+        )
+      ),
+      h(Btn, { variant: 'primary', size: 'sm', onClick: () => alert('Saved settings (demo)') }, 'Save Settings')
     )
   );
 }
@@ -1151,7 +1321,7 @@ function App() {
   const [layout, setLayout] = useState('split'); // 'split' | 'chat' | 'docs'
 
   // Generate stable conversation ID
-  const convId = useMemo(() => activeConv?.id || `conv_${Date.now().toString(36)}`, [activeConv]);
+  const convId = useMemo(() => activeConv?.id || 'default-conversation', [activeConv]);
 
   useEffect(() => {
     document.documentElement.className = darkMode ? 'dark' : 'light';
@@ -1167,13 +1337,17 @@ function App() {
   const rightTabs = [
     { id: 'documents', label: 'Documents', icon: 'file' },
     { id: 'qa', label: 'Q&A Tracker', icon: 'list' },
+    { id: 'brain', label: 'Brain / Memory', icon: 'brain' },
     { id: 'compliance', label: 'Compliance', icon: 'shield' },
+    { id: 'settings', label: 'Settings', icon: 'settings' },
   ];
 
   const RightPanel = activeProject
     ? rightTab === 'documents' ? h(DocumentsPanel, { projectId: activeProject.id, key: activeProject.id })
     : rightTab === 'qa' ? h(QAPanel, { projectId: activeProject.id, key: activeProject.id })
-    : h(CompliancePanel, { projectId: activeProject.id, key: activeProject.id })
+    : rightTab === 'brain' ? h(BrainPanel, { projectId: activeProject.id, key: activeProject.id })
+    : rightTab === 'compliance' ? h(CompliancePanel, { projectId: activeProject.id, key: activeProject.id })
+    : rightTab === 'settings' ? h(SettingsPanel, { projectId: activeProject.id, key: activeProject.id })
     : h('div', { className: 'flex items-center justify-center h-full text-sm text-[hsl(var(--muted))]' },
         'Select or create a project to get started'
       );
