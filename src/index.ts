@@ -24,39 +24,27 @@ import { DocumentIngestionWorkflow } from './workflows/DocumentIngestionWorkflow
 export class ProjectDurableObject {
   private state: DurableObjectState;
   private env: Env;
-
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
   }
-
-  async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request): Promise {
     const url = new URL(request.url);
-
     if (request.method === 'GET' && url.pathname === '/state') {
-      const stored = await this.state.storage.get<Record<string, unknown>>('project_state') ?? {};
-      return new Response(JSON.stringify(stored), {
-        headers: { 'Content-Type': 'application/json' },
-      });
+      const stored = await this.state.storage.get>('ps') ?? {};
+      return Response.json(stored);
     }
-
     if (request.method === 'PUT' && url.pathname === '/state') {
-      const body = await request.json() as Record<string, unknown>;
-      const current = await this.state.storage.get<Record<string, unknown>>('project_state') ?? {};
+      const body = await request.json() as Record;
+      const current = await this.state.storage.get>('ps') ?? {};
       const merged = { ...current, ...body, updated_at: new Date().toISOString() };
-      await this.state.storage.put('project_state', merged);
-      return new Response(JSON.stringify(merged), {
-        headers: { 'Content-Type': 'application/json' },
-      });
+      await this.state.storage.put('ps', merged);
+      return Response.json(merged);
     }
-
     if (request.method === 'DELETE') {
       await this.state.storage.deleteAll();
-      return new Response(JSON.stringify({ deleted: true }), {
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return Response.json({ deleted: true });
     }
-
     return new Response('Not Found', { status: 404 });
   }
 }
@@ -67,38 +55,27 @@ export class ProjectDurableObject {
 // ──────────────────────────────────────────
 export class ProposalAnalysisWorkflow {
   private env: Env;
-
-  constructor(env: Env) {
-    this.env = env;
-  }
-
+  constructor(env: Env) { this.env = env; }
   async run(
     event: { payload: { project_id: string; document_ids: string[]; analysis_types: string[] } },
-    step: { do: <T>(name: string, fn: () => Promise<T>) => Promise<T> }
-  ): Promise<unknown> {
+    step: { do: (name: string, fn: () => Promise) => Promise }
+  ): Promise {
     const { project_id, document_ids, analysis_types } = event.payload;
-
-    const results: Record<string, unknown> = {};
-
-    for (const analysisType of analysis_types) {
-      results[analysisType] = await step.do(`run-${analysisType}`, async () => {
-        // Route to the appropriate analysis via D1 workflow_runs log
-        const runId = `${analysisType}_${Date.now()}`;
-        await this.env.DB.prepare(`
-          INSERT INTO workflow_runs (id, project_id, workflow_type, status, progress)
-          VALUES (?, ?, ?, 'running', 0)
-        `).bind(runId, project_id, `proposal_${analysisType}`).run();
-
-        return { run_id: runId, status: 'queued', analysis_type: analysisType, document_count: document_ids.length };
+    const results: Record = {};
+    for (const t of analysis_types) {
+      results[t] = await step.do(`analyse-${t}`, async () => {
+        const id = `${t}_${Date.now()}`;
+        await this.env.DB.prepare(
+          'INSERT INTO workflow_runs (id, project_id, workflow_type, status, progress) VALUES (?,?,?,\'running\',0)'
+        ).bind(id, project_id, `proposal_${t}`).run();
+        return { run_id: id, status: 'queued', doc_count: document_ids.length };
       });
     }
-
     return { success: true, project_id, results };
   }
 }
-
-// Re-export Durable Objects and Workflows for Wrangler binding
-export { ConversationDurableObject, DocumentIngestionWorkflow };
+EOF
+echo "✓ Classes appended"
 
 // ──────────────────────────────────────────
 // CORS Headers
