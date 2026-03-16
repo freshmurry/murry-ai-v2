@@ -24,24 +24,24 @@ class_name = "ProjectDurableObject"
 # ──────────────────────────────────────────
 [[d1_databases]]
 binding = "DB"
-database_name = "murry-ai-db"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_name = "hello-ai"
+database_id = "36c3fa7e-c7d3-42a1-b386-e417637c24f1"
 
 # ──────────────────────────────────────────
 # R2 Bucket (document storage)
 # Run: wrangler r2 bucket create murry-ai-documents
 # ──────────────────────────────────────────
 [[r2_buckets]]
-binding = "DOCUMENTS_BUCKET"
-bucket_name = "murry-ai-documents"
+binding = "R2"
+bucket_name = "highstreet-it"
 
 # ──────────────────────────────────────────
 # Vectorize (semantic vector search)
 # Run: wrangler vectorize create murry-ai-vectors --dimensions=768 --metric=cosine
 # ──────────────────────────────────────────
 [[vectorize]]
-binding = "VECTORIZE"
-index_name = "murry-ai-vectors"
+binding = "VECTOR_INDEX"
+index_name = "vector-index"
 
 # ──────────────────────────────────────────
 # Workers AI (embeddings, vision, OCR)
