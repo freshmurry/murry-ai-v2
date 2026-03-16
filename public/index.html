@@ -618,7 +618,9 @@ function ChatPanel({ conversationId, projectId, mode, onNewConversation }) {
   const { messages, streaming, streamBuffer, toolCalls, pendingTask, sendMessage, approveTask } = useChat(conversationId);
   const [input, setInput] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState('');
   const [selectedMode, setSelectedMode] = useState(mode || 'general');
+  const [showUploadModal, setShowUploadModal] = useState(false);
   const bottomRef = useRef();
   const textareaRef = useRef();
   const fileInputRef = useRef();
@@ -632,29 +634,40 @@ function ChatPanel({ conversationId, projectId, mode, onNewConversation }) {
     textareaRef.current?.focus();
   };
 
-  const uploadFromChat = async (file) => {
-    if (!file || !projectId || uploading) return;
+  const uploadFiles = async (files) => {
+    if (!projectId) {
+      setUploadStatus('Select a project first.');
+      return;
+    }
     setUploading(true);
+    setUploadStatus('Uploading...');
     try {
-      const form = new FormData();
-      form.append('file', file);
-      form.append('project_id', projectId);
-      const result = await api('POST', '/api/upload', form);
-      setInput(prev => `${prev}\n[Uploaded ${file.name} to docs]`);
-      setTimeout(() => setInput(''), 2500);
-      return result;
+      for (const file of files) {
+        const form = new FormData();
+        form.append('file', file);
+        form.append('project_id', projectId);
+        await api('POST', '/api/upload', form);
+      }
+      setUploadStatus(`Uploaded ${files.length} file(s).`);
+      setTimeout(() => setUploadStatus(''), 3000);
+      setShowUploadModal(false);
     } catch (err) {
-      console.error(err);
-      return null;
+      setUploadStatus(err.message || 'Upload failed.');
     } finally {
       setUploading(false);
     }
   };
 
   const onFileSelected = (e) => {
-    const file = e.target.files?.[0];
-    if (file) uploadFromChat(file);
+    const files = Array.from(e.target.files || []);
+    if (files.length > 0) uploadFiles(files);
     e.target.value = '';
+  };
+
+  const onDrop = (e) => {
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer.files || []);
+    if (files.length > 0) uploadFiles(files);
   };
 
   const modes = [
@@ -727,18 +740,12 @@ function ChatPanel({ conversationId, projectId, mode, onNewConversation }) {
     ),
     // Input area
     h('div', { className: 'border-t border-[hsl(var(--border))] p-4 bg-[hsl(var(--sidebar))]' },
-      h('div', { className: 'flex gap-2 items-center bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-2xl p-2.5 focus-within:border-[hsl(var(--primary))] transition-colors' },
+      h('div', { className: 'flex gap-2 items-center bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-2xl p-2.5 focus-within:border-[hsl(var(--primary))] transition-colors'},
         h('button', {
           type: 'button',
-          onClick: () => fileInputRef.current?.click(),
+          onClick: () => setShowUploadModal(true),
           className: 'text-[hsl(var(--muted))] hover:text-[hsl(var(--fg))] p-2 rounded-md transition-all'
         }, h(Icon, { name: 'upload', size: 16 })),
-        h('input', {
-          ref: fileInputRef,
-          type: 'file',
-          className: 'hidden',
-          onChange: onFileSelected
-        }),
         h('textarea', {
           ref: textareaRef,
           value: input,
@@ -752,11 +759,31 @@ function ChatPanel({ conversationId, projectId, mode, onNewConversation }) {
         h(Btn, {
           variant: 'primary', size: 'icon',
           onClick: send,
-          disabled: (!input.trim() && !uploading) || streaming,
+          disabled: !input.trim() || streaming,
           className: 'flex-shrink-0 rounded-xl'
-        }, uploading ? '…' : h(Icon, { name: 'send', size: 16 }))
+        }, h(Icon, { name: 'send', size: 16 }))
       ),
-      h('p', { className: 'text-center text-xs text-[hsl(var(--muted))] mt-2' }, 'Enter to send • Shift+Enter for new line • Agents search your knowledge base automatically')
+      uploadStatus && h('p', { className: 'text-xs text-[hsl(var(--muted))] mt-1 text-center' }, uploadStatus),
+      h('p', { className: 'text-center text-xs text-[hsl(var(--muted))] mt-2' }, 'Enter to send • Shift+Enter for new line • Agents search your knowledge base automatically'),
+      showUploadModal && h(Modal, { title: 'Upload Documents', onClose: () => setShowUploadModal(false) },
+        h('div', {
+          onDrop: onDrop,
+          onDragOver: (e) => e.preventDefault(),
+          className: 'border border-dashed border-[hsl(var(--border))] rounded-xl p-4 text-center cursor-pointer bg-[hsl(var(--secondary))]'
+        },
+          h('p', { className: 'text-sm font-medium' }, 'Drag and drop files here'),
+          h('p', { className: 'text-xs text-[hsl(var(--muted))] mt-1' }, 'You can upload multiple PDF/DOCX/TXT files in one go'),
+          h('input', {
+            type: 'file',
+            multiple: true,
+            className: 'hidden',
+            ref: fileInputRef,
+            onChange: (e) => uploadFiles(Array.from(e.target.files || []))
+          }),
+          h(Btn, { size: 'sm', variant: 'primary', onClick: () => fileInputRef.current?.click(), disabled: uploading }, 'Select Files'),
+          h(Btn, { size: 'sm', variant: 'ghost', onClick: () => setShowUploadModal(false) }, 'Close')
+        )
+      )
     )
   );
 }

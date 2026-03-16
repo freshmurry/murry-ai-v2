@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS projects (
   description TEXT,
   type       TEXT NOT NULL DEFAULT 'proposal',   -- proposal | research | general | rfp
   status     TEXT NOT NULL DEFAULT 'active',      -- active | archived | completed
-  color      TEXT DEFAULT '#3B82F6',
+  color      TEXT DEFAULT '#c0c0c0',
   icon       TEXT DEFAULT 'folder',
   metadata   TEXT,                                -- JSON
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
