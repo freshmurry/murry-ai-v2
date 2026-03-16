@@ -1,5 +1,5 @@
 // ================================================================
-// MurryAI - Main Cloudflare Worker Entry Point
+// MurryAIv2 - Main Cloudflare Worker Entry Point
 // ================================================================
 
 import type { Env } from './types';
@@ -17,34 +17,43 @@ import {
 import { ConversationDurableObject } from './durable-objects/ConversationDO';
 import { DocumentIngestionWorkflow } from './workflows/DocumentIngestionWorkflow';
 
+// Re-export imported classes so Wrangler can find them
+export { ConversationDurableObject, DocumentIngestionWorkflow };
+
 // ──────────────────────────────────────────
 // ProjectDurableObject
-// Lightweight per-project state store (settings, active workflow tracking)
+// Lightweight per-project state store
 // ──────────────────────────────────────────
 export class ProjectDurableObject {
   private state: DurableObjectState;
   private env: Env;
+
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
   }
-  async fetch(request: Request): Promise {
+
+  async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+
     if (request.method === 'GET' && url.pathname === '/state') {
-      const stored = await this.state.storage.get>('ps') ?? {};
+      const stored = await this.state.storage.get<Record<string, unknown>>('ps') ?? {};
       return Response.json(stored);
     }
+
     if (request.method === 'PUT' && url.pathname === '/state') {
-      const body = await request.json() as Record;
-      const current = await this.state.storage.get>('ps') ?? {};
+      const body = await request.json() as Record<string, unknown>;
+      const current = await this.state.storage.get<Record<string, unknown>>('ps') ?? {};
       const merged = { ...current, ...body, updated_at: new Date().toISOString() };
       await this.state.storage.put('ps', merged);
       return Response.json(merged);
     }
+
     if (request.method === 'DELETE') {
       await this.state.storage.deleteAll();
       return Response.json({ deleted: true });
     }
+
     return new Response('Not Found', { status: 404 });
   }
 }
@@ -55,27 +64,31 @@ export class ProjectDurableObject {
 // ──────────────────────────────────────────
 export class ProposalAnalysisWorkflow {
   private env: Env;
-  constructor(env: Env) { this.env = env; }
+
+  constructor(env: Env) {
+    this.env = env;
+  }
+
   async run(
     event: { payload: { project_id: string; document_ids: string[]; analysis_types: string[] } },
-    step: { do: (name: string, fn: () => Promise) => Promise }
-  ): Promise {
+    step: { do: <T>(name: string, fn: () => Promise<T>) => Promise<T> }
+  ): Promise<unknown> {
     const { project_id, document_ids, analysis_types } = event.payload;
-    const results: Record = {};
+    const results: Record<string, unknown> = {};
+
     for (const t of analysis_types) {
       results[t] = await step.do(`analyse-${t}`, async () => {
         const id = `${t}_${Date.now()}`;
         await this.env.DB.prepare(
-          'INSERT INTO workflow_runs (id, project_id, workflow_type, status, progress) VALUES (?,?,?,\'running\',0)'
+          "INSERT INTO workflow_runs (id, project_id, workflow_type, status, progress) VALUES (?,?,?,'running',0)"
         ).bind(id, project_id, `proposal_${t}`).run();
         return { run_id: id, status: 'queued', doc_count: document_ids.length };
       });
     }
+
     return { success: true, project_id, results };
   }
 }
-EOF
-echo "✓ Classes appended"
 
 // ──────────────────────────────────────────
 // CORS Headers
@@ -106,7 +119,7 @@ export default {
     const pathname = url.pathname;
     const origin = request.headers.get('Origin') ?? undefined;
 
-    // ── CORS preflight ──
+    // CORS preflight
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
@@ -114,26 +127,22 @@ export default {
     try {
       let response: Response;
 
-      // ── WebSocket upgrade for chat ──
+      // WebSocket upgrade for chat
       if (pathname.startsWith('/ws/') && request.headers.get('Upgrade') === 'websocket') {
         response = await handleWebSocket(request, env, pathname);
       }
-
-      // ── API Routes ──
+      // API Routes
       else if (pathname.startsWith('/api/')) {
         response = await routeAPI(request, env, pathname);
       }
-
-      // ── Health check ──
+      // Health check
       else if (pathname === '/health') {
-        response = new Response(JSON.stringify({
-          status: 'ok',
-          app: env.APP_NAME,
-          ts: new Date().toISOString(),
-        }), { headers: { 'Content-Type': 'application/json' } });
+        response = new Response(
+          JSON.stringify({ status: 'ok', app: env.APP_NAME, ts: new Date().toISOString() }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
       }
-
-      // ── Static assets (the React SPA) ──
+      // Static assets (React SPA)
       else {
         response = await serveStaticAssets(request, env, pathname);
       }
@@ -154,83 +163,59 @@ export default {
 // ──────────────────────────────────────────
 
 async function routeAPI(request: Request, env: Env, pathname: string): Promise<Response> {
-  // /api/projects[/:id]
-  if (pathname.match(/^\/api\/projects(\/.*)?$/)) {
+  if (pathname.match(/^\/api\/projects(\/.*)?$/))
     return handleProjects(request, env);
-  }
 
-  // /api/documents[/:id[/content]]
-  if (pathname.match(/^\/api\/documents(\/.*)?$/)) {
+  if (pathname.match(/^\/api\/documents(\/.*)?$/))
     return handleDocuments(request, env);
-  }
 
-  // /api/upload (multipart form upload shortcut)
-  if (pathname === '/api/upload' && request.method === 'POST') {
+  if (pathname === '/api/upload' && request.method === 'POST')
     return uploadDocument(request, env);
-  }
 
-  // /api/qa[/:id]
-  if (pathname.match(/^\/api\/qa(\/.*)?$/)) {
+  if (pathname.match(/^\/api\/qa(\/.*)?$/))
     return handleQA(request, env);
-  }
 
-  // /api/compliance[/:id]
-  if (pathname.match(/^\/api\/compliance(\/.*)?$/)) {
+  if (pathname.match(/^\/api\/compliance(\/.*)?$/))
     return handleCompliance(request, env);
-  }
 
-  // /api/conversations[/:id]
-  if (pathname.match(/^\/api\/conversations(\/.*)?$/)) {
+  if (pathname.match(/^\/api\/conversations(\/.*)?$/))
     return handleConversations(request, env);
-  }
 
-  // /api/brain[/:id]
-  if (pathname.match(/^\/api\/brain(\/.*)?$/)) {
+  if (pathname.match(/^\/api\/brain(\/.*)?$/))
     return handleBrain(request, env);
-  }
 
-  // /api/workflows
-  if (pathname.startsWith('/api/workflows')) {
+  if (pathname.startsWith('/api/workflows'))
     return handleWorkflows(request, env);
-  }
 
-  // /api/search
-  if (pathname === '/api/search' && request.method === 'POST') {
+  if (pathname === '/api/search' && request.method === 'POST')
     return handleSearch(request, env);
-  }
 
-  // /api/tasks[/:id/approve]
-  if (pathname.match(/^\/api\/tasks(\/.*)?$/) && request.method === 'POST') {
+  if (pathname.match(/^\/api\/tasks(\/.*)?$/) && request.method === 'POST')
     return handleTaskApproval(request, env, pathname);
-  }
 
   return apiError(`API endpoint not found: ${pathname}`, 404);
 }
 
 // ──────────────────────────────────────────
-// WebSocket Handler → Durable Object
+// WebSocket → Durable Object
 // ──────────────────────────────────────────
 
 async function handleWebSocket(request: Request, env: Env, pathname: string): Promise<Response> {
-  // /ws/:conversation_id
   const match = pathname.match(/^\/ws\/(.+)$/);
   if (!match) return apiError('Invalid WebSocket path', 400);
 
   const conversationId = match[1];
-
-  // Route to the Durable Object for this conversation
   const id = env.CONVERSATION_DO.idFromName(conversationId);
   const stub = env.CONVERSATION_DO.get(id);
 
-  // Forward to Durable Object
-  return stub.fetch(new Request(`https://internal/ws`, {
+  return stub.fetch(new Request('https://internal/ws', {
     method: 'GET',
     headers: request.headers,
   }));
 }
 
 // ──────────────────────────────────────────
-// Search Endpoint
+// Search
 // ──────────────────────────────────────────
 
 async function handleSearch(request: Request, env: Env): Promise<Response> {
@@ -260,14 +245,12 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
 // ──────────────────────────────────────────
 
 async function handleTaskApproval(request: Request, env: Env, pathname: string): Promise<Response> {
-  // /api/tasks/:id/approve
   const match = pathname.match(/^\/api\/tasks\/([^/]+)\/approve$/);
   if (!match) return apiError('Invalid task approval path', 400);
 
   const taskId = match[1];
   const body = await request.json() as { approved: boolean; reason?: string; conversation_id: string };
 
-  // Get the conversation ID from the task
   const task = await env.DB.prepare('SELECT conversation_id FROM agent_tasks WHERE id = ?')
     .bind(taskId)
     .first<{ conversation_id: string }>();
@@ -286,12 +269,11 @@ async function handleTaskApproval(request: Request, env: Env, pathname: string):
 }
 
 // ──────────────────────────────────────────
-// Static Asset Serving (SPA fallback)
+// Static Assets (SPA fallback)
 // ──────────────────────────────────────────
 
 async function serveStaticAssets(request: Request, env: Env, pathname: string): Promise<Response> {
   try {
-    // Try exact path first
     const assetResponse = await env.ASSETS.fetch(request);
     if (assetResponse.status !== 404) return assetResponse;
 
