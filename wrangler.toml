@@ -55,7 +55,7 @@ binding = "AI"
 # ──────────────────────────────────────────
 [[kv_namespaces]]
 binding = "KV_CACHE"
-id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+id = "a1c456f2fd784e57ae547eb6d995d1d8"
 
 # ──────────────────────────────────────────
 # Workflows (background processing pipelines)
