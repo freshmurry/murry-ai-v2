@@ -184,6 +184,9 @@ async function routeAPI(request: Request, env: Env, pathname: string): Promise<R
   if (pathname.match(/^\/api\/brain(\/.*)?$/))
     return handleBrain(request, env);
 
+  if (pathname === '/api/chat' && request.method === 'POST')
+    return handleChat(request, env);
+
   if (pathname.startsWith('/api/workflows'))
     return handleWorkflows(request, env);
 
@@ -238,6 +241,49 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
       tokens_used: ctx.tokens_used,
     },
   }), { headers: { 'Content-Type': 'application/json' } });
+}
+
+async function handleChat(request: Request, env: Env): Promise<Response> {
+  const body = await request.json() as { conversation_id?: string; project_id?: string; content: string };
+  if (!body.content?.trim()) return apiError('content is required', 400);
+
+  const conversationId = body.conversation_id || generateId('conv');
+
+  // Ensure conversation exists
+  const existing = await env.DB.prepare('SELECT id FROM conversations WHERE id = ?').bind(conversationId).first();
+  if (!existing) {
+    await env.DB.prepare('INSERT INTO conversations (id, project_id, title, mode) VALUES (?, ?, ?, ?)').bind(
+      conversationId,
+      body.project_id ?? null,
+      'Chat conversation',
+      'chat'
+    ).run();
+  }
+
+  const userMessageId = generateId('msg');
+  await env.DB.prepare('INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, ?, ?)')
+    .bind(userMessageId, conversationId, 'user', body.content)
+    .run();
+
+  // Simple deterministic assistant response with subtle RAG context from documents
+  let responseText = `Got it. I heard: "${body.content.trim()}".`;
+  if (body.project_id) {
+    const docs = await env.DB.prepare('SELECT name FROM documents WHERE project_id = ? LIMIT 2')
+      .bind(body.project_id).all<{ name: string }>();
+    if (docs.results.length > 0) {
+      responseText += ` I also found ${docs.results.length} knowledge documents in this project: ${docs.results.map(d => d.name).join(', ')}.`;
+    }
+  }
+
+  const assistantMessageId = generateId('msg');
+  await env.DB.prepare('INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, ?, ?)')
+    .bind(assistantMessageId, conversationId, 'assistant', responseText)
+    .run();
+
+  const messages = await env.DB.prepare('SELECT id, role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC')
+    .bind(conversationId).all();
+
+  return apiJson({ success: true, data: { conversation_id: conversationId, response: responseText, messages: messages.results } });
 }
 
 // ──────────────────────────────────────────
