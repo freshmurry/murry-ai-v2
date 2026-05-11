@@ -1,0 +1,23 @@
+{
+  "name": "murry-ai",
+  "version": "1.0.0",
+  "description": "MurryAI — Agentic Proposal Intelligence Platform on Cloudflare",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy",
+    "db:migrate": "wrangler d1 execute hello-ai --file=./migrations/001_init.sql",
+    "db:migrate:remote": "wrangler d1 execute hello-ai --remote --file=./migrations/001_init.sql",
+    "db:studio": "wrangler d1 studio hello-ai",
+    "setup": "npm run db:migrate && echo 'Run: wrangler secret put ANTHROPIC_API_KEY'",
+    "setup:remote": "npm run db:migrate:remote && echo 'Run: wrangler secret put ANTHROPIC_API_KEY'",
+    "tail": "wrangler tail",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241205.0",
+    "typescript": "^5.3.0",
+    "wrangler": "^4.74.0"
+  }
+}
