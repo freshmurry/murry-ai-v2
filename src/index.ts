@@ -3,7 +3,7 @@
 // ================================================================
 
 import type { Env } from './types';
-import { apiError } from './types';
+import { apiError, apiJson } from './types';
 import {
   handleProjects,
   handleDocuments,
@@ -19,6 +19,13 @@ import { DocumentIngestionWorkflow } from './workflows/DocumentIngestionWorkflow
 
 // Re-export imported classes so Wrangler can find them
 export { ConversationDurableObject, DocumentIngestionWorkflow };
+
+// ──────────────────────────────────────────
+// Utility Functions
+// ──────────────────────────────────────────
+function generateId(prefix: string): string {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+}
 
 // ──────────────────────────────────────────
 // ProjectDurableObject
@@ -93,7 +100,6 @@ export class ProposalAnalysisWorkflow {
 // ──────────────────────────────────────────
 // CORS Headers
 // ──────────────────────────────────────────
-
 function corsHeaders(origin?: string): HeadersInit {
   return {
     'Access-Control-Allow-Origin': origin ?? '*',
@@ -112,7 +118,6 @@ function withCORS(response: Response, origin?: string): Response {
 // ──────────────────────────────────────────
 // Main Router
 // ──────────────────────────────────────────
-
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -161,7 +166,6 @@ export default {
 // ──────────────────────────────────────────
 // API Router
 // ──────────────────────────────────────────
-
 async function routeAPI(request: Request, env: Env, pathname: string): Promise<Response> {
   if (pathname.match(/^\/api\/projects(\/.*)?$/))
     return handleProjects(request, env);
@@ -191,7 +195,7 @@ async function routeAPI(request: Request, env: Env, pathname: string): Promise<R
     return handleWorkflows(request, env);
 
   if (pathname === '/api/search' && request.method === 'POST')
-    return handleSearch(request, env);
+    return handleSearch(request, env, pathname);
 
   if (pathname.match(/^\/api\/tasks(\/.*)?$/) && request.method === 'POST')
     return handleTaskApproval(request, env, pathname);
@@ -200,28 +204,9 @@ async function routeAPI(request: Request, env: Env, pathname: string): Promise<R
 }
 
 // ──────────────────────────────────────────
-// WebSocket → Durable Object
+// Search Handler
 // ──────────────────────────────────────────
-
-async function handleWebSocket(request: Request, env: Env, pathname: string): Promise<Response> {
-  const match = pathname.match(/^\/ws\/(.+)$/);
-  if (!match) return apiError('Invalid WebSocket path', 400);
-
-  const conversationId = match[1];
-  const id = env.CONVERSATION_DO.idFromName(conversationId);
-  const stub = env.CONVERSATION_DO.get(id);
-
-  return stub.fetch(new Request('https://internal/ws', {
-    method: 'GET',
-    headers: request.headers,
-  }));
-}
-
-// ──────────────────────────────────────────
-// Search
-// ──────────────────────────────────────────
-
-async function handleSearch(request: Request, env: Env): Promise<Response> {
+async function handleSearch(request: Request, env: Env, pathname: string): Promise<Response> {
   const { executeRAG } = await import('./lib/rag');
   const body = await request.json() as { query: string; project_id?: string; top_k?: number };
 
@@ -243,6 +228,9 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
   }), { headers: { 'Content-Type': 'application/json' } });
 }
 
+// ──────────────────────────────────────────
+// Chat Handler
+// ──────────────────────────────────────────
 async function handleChat(request: Request, env: Env): Promise<Response> {
   const body = await request.json() as { conversation_id?: string; project_id?: string; content: string };
   if (!body.content?.trim()) return apiError('content is required', 400);
@@ -283,13 +271,36 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   const messages = await env.DB.prepare('SELECT id, role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC')
     .bind(conversationId).all();
 
-  return apiJson({ success: true, data: { conversation_id: conversationId, response: responseText, messages: messages.results } });
+  return apiJson({ 
+    success: true, 
+    data: { 
+      conversation_id: conversationId, 
+      response: responseText, 
+      messages: messages.results 
+    } 
+  });
+}
+
+// ──────────────────────────────────────────
+// WebSocket → Durable Object
+// ──────────────────────────────────────────
+async function handleWebSocket(request: Request, env: Env, pathname: string): Promise<Response> {
+  const match = pathname.match(/^\/ws\/(.+)$/);
+  if (!match) return apiError('Invalid WebSocket path', 400);
+
+  const conversationId = match[1];
+  const id = env.CONVERSATION_DO.idFromName(conversationId);
+  const stub = env.CONVERSATION_DO.get(id);
+
+  return stub.fetch(new Request('https://internal/ws', {
+    method: 'GET',
+    headers: request.headers,
+  }));
 }
 
 // ──────────────────────────────────────────
 // Task Approval
 // ──────────────────────────────────────────
-
 async function handleTaskApproval(request: Request, env: Env, pathname: string): Promise<Response> {
   const match = pathname.match(/^\/api\/tasks\/([^/]+)\/approve$/);
   if (!match) return apiError('Invalid task approval path', 400);
@@ -317,7 +328,6 @@ async function handleTaskApproval(request: Request, env: Env, pathname: string):
 // ──────────────────────────────────────────
 // Static Assets (SPA fallback)
 // ──────────────────────────────────────────
-
 function pathLooksLikeStaticFile(pathname: string): boolean {
   const base = pathname.split('/').pop() ?? '';
   return base.includes('.') && base !== 'index.html';
