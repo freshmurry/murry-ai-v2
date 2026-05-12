@@ -318,15 +318,37 @@ async function handleTaskApproval(request: Request, env: Env, pathname: string):
 // Static Assets (SPA fallback)
 // ──────────────────────────────────────────
 
+function pathLooksLikeStaticFile(pathname: string): boolean {
+  const base = pathname.split('/').pop() ?? '';
+  return base.includes('.') && base !== 'index.html';
+}
+
 async function serveStaticAssets(request: Request, env: Env, pathname: string): Promise<Response> {
   try {
     const assetResponse = await env.ASSETS.fetch(request);
-    if (assetResponse.status !== 404) return assetResponse;
+    if (assetResponse.ok) return assetResponse;
 
-    // SPA fallback — serve index.html for all non-API routes
-    const indexRequest = new Request(new URL('/index.html', request.url).toString(), request);
-    return env.ASSETS.fetch(indexRequest);
+    // SPA fallback: 404, or asset pipeline errors in local dev (often 5xx), but not real files like favicon.ico
+    const trySpa =
+      request.method === 'GET' &&
+      !pathLooksLikeStaticFile(pathname) &&
+      (assetResponse.status === 404 || assetResponse.status >= 500);
+    if (trySpa) {
+      const indexRequest = new Request(new URL('/index.html', request.url).toString(), request);
+      const indexResponse = await env.ASSETS.fetch(indexRequest);
+      if (indexResponse.ok) return indexResponse;
+    }
+
+    return assetResponse;
   } catch {
+    if (request.method === 'GET' && !pathLooksLikeStaticFile(pathname)) {
+      try {
+        const indexRequest = new Request(new URL('/index.html', request.url).toString(), request);
+        return await env.ASSETS.fetch(indexRequest);
+      } catch {
+        /* fall through */
+      }
+    }
     return new Response('Not Found', { status: 404 });
   }
 }
