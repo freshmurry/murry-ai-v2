@@ -18,10 +18,13 @@
     "tail": "node ./node_modules/wrangler/bin/wrangler.js tail",
     "type-check": "node ./node_modules/typescript/bin/tsc --noEmit"
   },
-  "dependencies": {},
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260511.1",
     "typescript": "^5.0.0",
     "wrangler": "^4.0.0"
-  }
+  },
+  "main": "index.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
 }
