@@ -21,7 +21,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260511.1",
     "typescript": "^5.0.0",
-    "wrangler": "^4.0.0"
+    "wrangler": "^4.86.0"
   },
   "main": "index.js",
   "keywords": [],
