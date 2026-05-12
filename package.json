@@ -7,7 +7,6 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    // "postinstall": "node scripts/install-wrangler-bin.cjs",
     "wrangler": "node ./node_modules/wrangler/bin/wrangler.js",
     "dev": "node ./node_modules/wrangler/bin/wrangler.js dev --local",
     "deploy": "node ./node_modules/wrangler/bin/wrangler.js deploy",
