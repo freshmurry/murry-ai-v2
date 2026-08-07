@@ -3,7 +3,7 @@
 // ================================================================
 
 import type { Env } from './types';
-import { apiError } from './types';
+import { apiError, apiJson, generateId } from './types';
 import {
   handleProjects,
   handleDocuments,

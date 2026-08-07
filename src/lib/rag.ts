@@ -108,24 +108,33 @@ export async function semanticSearch(
   env: Env,
   options: SearchOptions = {}
 ): Promise<Array<{ vector_id: string; score: number; metadata: VectorMetadata }>> {
+  if (!env.VECTORIZE || typeof env.VECTORIZE.query !== 'function') {
+    return [];
+  }
+
   const embedding = await generateEmbedding(query, env);
 
   const filter: Record<string, unknown> = {};
   if (options.project_id) filter['project_id'] = options.project_id;
 
-  const result = await env.VECTORIZE.query(embedding, {
-    topK: options.top_k ?? 20,
-    filter: Object.keys(filter).length > 0 ? (filter as unknown as VectorizeVectorMetadataFilter) : undefined,
-    returnMetadata: 'all',
-  });
+  try {
+    const result = await env.VECTORIZE.query(embedding, {
+      topK: options.top_k ?? 20,
+      filter: Object.keys(filter).length > 0 ? (filter as unknown as VectorizeVectorMetadataFilter) : undefined,
+      returnMetadata: 'all',
+    });
 
-  return (result.matches ?? [])
-    .filter((m) => m.score >= (options.score_threshold ?? 0.3))
-    .map((m) => ({
-      vector_id: m.id,
-      score: m.score,
-      metadata: m.metadata as unknown as VectorMetadata,
-    }));
+    return (result.matches ?? [])
+      .filter((m) => m.score >= (options.score_threshold ?? 0.3))
+      .map((m) => ({
+        vector_id: m.id,
+        score: m.score,
+        metadata: m.metadata as unknown as VectorMetadata,
+      }));
+  } catch (err) {
+    console.warn('Vector search unavailable; falling back to empty RAG context:', err);
+    return [];
+  }
 }
 
 // ──────────────────────────────────────────

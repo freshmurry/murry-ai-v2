@@ -40,7 +40,7 @@ bucket_name = "highstreet-it"
 # Run: wrangler vectorize create murry-ai-vectors --dimensions=768 --metric=cosine
 # ──────────────────────────────────────────
 [[vectorize]]
-binding = "VECTOR_INDEX"
+binding = "VECTORIZE"
 index_name = "vector-index"
 
 # ──────────────────────────────────────────
