@@ -1,11 +1,11 @@
 name = "murry-ai-v2"
 main = "src/index.ts"
-compatibility_date = "2025-01-01"
+compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ENVIRONMENT = "production"
-APP_NAME = "MurryAI"
+APP_NAME = "murry-ai-v2"
 
 # ──────────────────────────────────────────
 # Durable Objects (persistent stateful sessions)
