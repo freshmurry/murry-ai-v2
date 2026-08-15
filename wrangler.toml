@@ -25,15 +25,6 @@ class_name = "ConversationDurableObject"
 name = "PROJECT_DO"
 class_name = "ProjectDurableObject"
 
-# Required EXports section for Durable Objects
-[exports.ConversationDurableObject]
-type = "durable-object"
-storage = "sqlite"
-
-[exports.ProjectDurableObject]
-type = "durable-object"
-storage = "sqlite"
-
 # ──────────────────────────────────────────
 # D1 Database (relational metadata store)
 # ──────────────────────────────────────────
