@@ -1,7 +1,7 @@
 name = "murry-ai-v2"
-main = "src/index.ts"
+main = "__wrapper__.ts"  # Use the wrapper instead of index.js directly
 compatibility_date = "2024-01-01"
-compatibility_flags = ["nodejs_compat"]
+compatibility_flags = ["nodejs_compat", "nodejs_aws_esm"]
 
 [env.production.vars]
 APP_NAME = "murry-ai-v2"
