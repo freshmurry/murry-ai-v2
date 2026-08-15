@@ -12,7 +12,7 @@ compatibility_flags = ["nodejs_compat", "nodejs_aws_esm"]
 # ──────────────────────────────────────────
 [env.production.assets]
   directory = "public"
-  binding = "ASSETS" 
+  binding = "ASSETS"
 
 # ──────────────────────────────────────────
 # Durable Objects (persistent stateful sessions)
@@ -29,32 +29,32 @@ class_name = "ProjectDurableObject"
 # D1 Database (relational metadata store)
 # Run: wrangler d1 create murry-ai-db
 # ──────────────────────────────────────────
-[env.production.d1_databases]
-  binding = "DB"
-  database_name = "hello-ai"
-  database_id = "927bd55a77a1bc0a9c344ec45a6eed7e"
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "hello-ai"
+database_id = "927bd55a77a1bc0a9c344ec45a6eed7e"
 
 # ──────────────────────────────────────────
 # R2 Bucket (document storage)
 # Run: wrangler r2 bucket create murry-ai-documents
 # ──────────────────────────────────────────
-[env.production.implementation.r2_buckets]
-  binding = "R2"
-  bucket_name = "highstreet-it"
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "highstreet-it"
 
 # ──────────────────────────────────────────
 # Vectorize (semantic vector search)
 # Run: wrangler vectorize create murry-ai-vectors --dimensions=768 --metric=cosine
 # ──────────────────────────────────────────
-[env.production.implementation.vectorize]
-  binding = "VECTORIZE"
-  index_name = "vector-index"
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "vector-index"
 
 # ──────────────────────────────────────────
 # Workers AI (embeddings, vision, OCR)
 # ──────────────────────────────────────────
-[env.production.ai]
-  binding = "AI"
+[[ai]]
+binding = "AI"
 
 # ──────────────────────────────────────────
 # KV Namespace (caching & session state)
@@ -69,17 +69,8 @@ id = "ba2abda5a6f5414a8fcb1de38bff9ac1"
 # ──────────────────────────────────────────
 [[workflows]]
 binding = "DOCUMENT_INGESTION"
-name = "document-ingestion-workflow"
-class_name = "DocumentIngestionWorkflow"
+script_name = "DocumentIngestionWorkflow"
 
 [[workflows]]
 binding = "PROPOSAL_ANALYSIS"
-name = "proposal-analysis-workflow"
-class_name = "ProposalAnalysisWorkflow"
-
-# ──────────────────────────────────────────
-# Durable Object Migrations
-# ──────────────────────────────────────────
-[[migrations]]
-tag = "v1"
-new_classes = ["ConversationDurableObject", "ProjectDurableObject"]
+script_name = "ProposalAnalysisWorkflow"
