@@ -60,8 +60,8 @@ index_name = "vector-index"
 # Workers AI (embeddings, vision, OCR)
 # ⚠️ FIX: Must be a simple object with binding property
 # ──────────────────────────────────────────
-[[ai]]
-binding = "AI"
+#[[ai]]
+#binding = "AI"
 
 # ──────────────────────────────────────────
 # KV Namespace (caching & session state)
