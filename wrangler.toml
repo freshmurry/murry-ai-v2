@@ -31,7 +31,7 @@ class_name = "ProjectDurableObject"
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "hello-ai"
-database_id = "927bd55a77a1bc0a9c344ec45a6eed7e"
+database_id = "36c3fa7e-c7d3-42a1-b386-e417637c24f1"
 
 # ──────────────────────────────────────────
 # R2 Bucket (document storage)
