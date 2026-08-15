@@ -1,11 +1,18 @@
 name = "murry-ai-v2"
-main = "__wrapper__.ts"  # Use the wrapper instead of index.js directly
+main = "src/index.ts"
 compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat", "nodejs_aws_esm"]
 
 [env.production.vars]
-APP_NAME = "murry-ai-v2"
-ENVIRONMENT = "production"
+  APP_NAME = "murry-ai-v2"
+  ENVIRONMENT = "production"
+
+# ──────────────────────────────────────────
+# Static assets (the React frontend)
+# ──────────────────────────────────────────
+[env.production.assets]
+  directory = "public"
+  binding = "ASSETS" 
 
 # ──────────────────────────────────────────
 # Durable Objects (persistent stateful sessions)
@@ -22,32 +29,32 @@ class_name = "ProjectDurableObject"
 # D1 Database (relational metadata store)
 # Run: wrangler d1 create murry-ai-db
 # ──────────────────────────────────────────
-[[d1_databases]]
-binding = "DB"
-database_name = "hello-ai"
-database_id = "36c3fa7e-c7d3-42a1-b386-e417637c24f1"
+[env.production.d1_databases]
+  binding = "DB"
+  database_name = "hello-ai"
+  database_id = "927bd55a77a1bc0a9c344ec45a6eed7e"
 
 # ──────────────────────────────────────────
 # R2 Bucket (document storage)
 # Run: wrangler r2 bucket create murry-ai-documents
 # ──────────────────────────────────────────
-[[r2_buckets]]
-binding = "R2"
-bucket_name = "highstreet-it"
+[env.production.implementation.r2_buckets]
+  binding = "R2"
+  bucket_name = "highstreet-it"
 
 # ──────────────────────────────────────────
 # Vectorize (semantic vector search)
 # Run: wrangler vectorize create murry-ai-vectors --dimensions=768 --metric=cosine
 # ──────────────────────────────────────────
-[[vectorize]]
-binding = "VECTORIZE"
-index_name = "vector-index"
+[env.production.implementation.vectorize]
+  binding = "VECTORIZE"
+  index_name = "vector-index"
 
 # ──────────────────────────────────────────
 # Workers AI (embeddings, vision, OCR)
 # ──────────────────────────────────────────
-[ai]
-binding = "AI"
+[env.production.ai]
+  binding = "AI"
 
 # ──────────────────────────────────────────
 # KV Namespace (caching & session state)
@@ -76,10 +83,3 @@ class_name = "ProposalAnalysisWorkflow"
 [[migrations]]
 tag = "v1"
 new_classes = ["ConversationDurableObject", "ProjectDurableObject"]
-
-# ──────────────────────────────────────────
-# Static assets (the React frontend)
-# ──────────────────────────────────────────
-[assets]
-directory = "./public"
-binding = "ASSETS"
