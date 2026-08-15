@@ -7,6 +7,10 @@ export interface Env {
   // Durable Objects
   CONVERSATION_DO: DurableObjectNamespace;
   PROJECT_DO: DurableObjectNamespace;
+  RESEARCH_AGENT: DurableObjectNamespace;
+  WRITER_AGENT: DurableObjectNamespace;
+  EDITOR_AGENT: DurableObjectNamespace;
+  PRICING_AGENT: DurableObjectNamespace;
 
   // Storage
   DB: D1Database;
@@ -23,6 +27,7 @@ export interface Env {
 
   // Secrets (set with: wrangler secret put ANTHROPIC_API_KEY)
   ANTHROPIC_API_KEY: string;
+  JWT_SECRET?: string;
 
   // Static assets
   ASSETS: Fetcher;
@@ -30,6 +35,60 @@ export interface Env {
   // Vars
   ENVIRONMENT: string;
   APP_NAME: string;
+}
+
+// ──────────────────────────────────────────
+// Sub-Agent Interfaces
+// ──────────────────────────────────────────
+
+export interface ResearchParams {
+  clientName: string;
+  industry?: string;
+}
+
+export interface ResearchResult {
+  summary: string;
+  competitors: string[];
+  industryTrends: string[];
+  keyRisks: string[];
+}
+
+export interface WriteSectionParams {
+  sectionType: 'executive_summary' | 'scope' | 'timeline' | 'pricing' | 'team' | 'case_studies' | 'terms';
+  context: {
+    clientName: string;
+    industry?: string;
+    rfpText?: string;
+    orgPastWins?: string[];
+    tone?: 'formal' | 'conversational' | 'technical';
+  };
+}
+
+export interface WriteSectionResult {
+  title: string;
+  content: string;
+}
+
+export interface ReviewProposalParams {
+  sections: Array<{ type: string; content: string }>;
+}
+
+export interface ReviewProposalResult {
+  overallScore: number;
+  sectionScores: Record<string, number>;
+  weakSections: string[];
+  suggestions: string[];
+}
+
+export interface SuggestPricingParams {
+  serviceType: string;
+  scope: string;
+  historicalDeals?: Array<{ value: number; won: boolean }>;
+}
+
+export interface SuggestPricingResult {
+  suggestedTiers: Array<{ name: string; price: number; description: string }>;
+  reasoning: string;
 }
 
 // ──────────────────────────────────────────
@@ -252,6 +311,16 @@ export interface ComplianceItem {
   metadata?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+}
+
+export interface ProjectSettings {
+  project_id: string;
+  proposal_template?: string;
+  default_answer_style?: string;
+  quote_format?: string;
+  ai_model?: string;
+  ai_autonomy?: string;
+  updated_at?: string;
 }
 
 export interface BrainEntry {

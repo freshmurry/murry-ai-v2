@@ -132,6 +132,22 @@ export class AnthropicClient {
     return textBlock && 'text' in textBlock ? textBlock.text : '';
   }
 
+  /**
+   * Streaming completion with tool-use support — thin convenience wrapper
+   * around stream(), matching the (messages, systemPrompt, tools, onEvent)
+   * call signature used by the agent tool-use loop.
+   */
+  async completeStream(
+    messages: ClaudeMessage[],
+    systemPrompt: string,
+    tools: AgentTool[],
+    onEvent: (event: ClaudeStreamEvent) => void | Promise<void>
+  ): Promise<void> {
+    for await (const event of this.stream({ messages, system: systemPrompt, tools })) {
+      await onEvent(event);
+    }
+  }
+
   private headers() {
     return {
       'Content-Type': 'application/json',

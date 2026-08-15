@@ -625,7 +625,7 @@ function ChatPanel({ conversationId, projectId, mode, onNewConversation }) {
       modes.map(m => h('button', {
         key: m.id,
         onClick: () => setSelectedMode(m.id),
-        className: `flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all ${selectedMode === m.id ? 'bg-[hsl(var(--primary))] text-black' : 'text-[hsl(var(--muted))] hover:text-[hsl(var(--fg))] hover:bg-[hsl(var(--secondary))]'}
+        className: `flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all ${selectedMode === m.id ? 'bg-[hsl(var(--primary))] text-black' : 'text-[hsl(var(--muted))] hover:text-[hsl(var(--fg))] hover:bg-[hsl(var(--secondary))]'}`
       }, h(Icon, { name: m.icon, size: 11 }), m.label))
     ),
     h('div', { className: 'flex-1 overflow-y-auto p-4 space-y-3' },
@@ -864,10 +864,13 @@ function QAPanel({ projectId }) {
   );
 }
 
-function BrainPanel({ projectId }) {
+function BrainPanel({ projectId, conversationId }) {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [newEntry, setNewEntry] = useState({ type: 'fact', title: '', content: '' });
+  const [filter, setFilter] = useState('');
+  const [extracting, setExtracting] = useState(false);
+  const [extractMsg, setExtractMsg] = useState('');
 
   const load = () => {
     setLoading(true);
@@ -875,6 +878,20 @@ function BrainPanel({ projectId }) {
   };
 
   useEffect(load, [projectId]);
+
+  const filtered = entries.filter(e => !filter || (e.title?.toLowerCase().includes(filter.toLowerCase()) || e.content?.toLowerCase().includes(filter.toLowerCase())));
+
+  const autoExtract = async () => {
+    if (!conversationId) return;
+    setExtracting(true); setExtractMsg('');
+    try {
+      const r = await POST('/api/brain/extract', { conversation_id: conversationId, project_id: projectId });
+      const n = r.data?.extracted?.length || 0;
+      setExtractMsg(n > 0 ? `Extracted ${n} new insight(s)` : 'Nothing new worth remembering');
+      load();
+    } catch (err) { setExtractMsg('Extract failed: ' + (err instanceof Error ? err.message : '')); }
+    finally { setExtracting(false); setTimeout(() => setExtractMsg(''), 5000); }
+  };
 
   const save = async () => {
     if (!newEntry.title.trim() || !newEntry.content.trim()) return;
@@ -908,15 +925,32 @@ function BrainPanel({ projectId }) {
         placeholder: 'Write knowledge entry details here...',
         className: 'w-full mt-2 bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-2 py-2 text-xs min-h-[80px] resize-vertical'
       }),
-      h('div', { className: 'mt-2 flex items-center justify-end' }, h(Btn, { size: 'sm', variant: 'primary', onClick: save }, 'Save to Brain'))
+      h('div', { className: 'mt-2 flex items-center justify-between' },
+        h('input', {
+          value: filter, onChange: e => setFilter(e.target.value),
+          placeholder: 'Filter entries...',
+          className: 'bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-2 py-1 text-xs w-32'
+        }),
+        h('div', { className: 'flex items-center gap-2' },
+          extractMsg && h('span', { className: 'text-xs text-[hsl(var(--muted))]' }, extractMsg),
+          conversationId && h(Btn, { size: 'sm', variant: 'ghost', onClick: autoExtract, disabled: extracting, title: 'Auto-extract insights from conversation' }, extracting ? 'Extracting...' : '✨ Auto-Extract'),
+          h(Btn, { size: 'sm', variant: 'primary', onClick: save }, 'Save to Brain')
+        )
+      )
     ),
     h('div', { className: 'flex-1 overflow-y-auto p-3 space-y-2' },
       loading ? [1,2,3].map(i => h('div', { key: i, className: 'shimmer h-16 rounded-xl' })) :
       entries.length === 0 ? h('div', { className: 'text-center py-12 text-[hsl(var(--muted))]' }, 'No brain entries yet.') :
-      entries.map(entry => h('div', { key: entry.id, className: 'border border-[hsl(var(--border))] rounded-xl p-3 bg-[hsl(var(--card))]' },
+      filtered.map(entry => h('div', { key: entry.id, className: 'border border-[hsl(var(--border))] rounded-xl p-3 bg-[hsl(var(--card))]' },
         h('div', { className: 'flex items-center justify-between text-xs text-[hsl(var(--muted))]' },
           h('span', null, entry.type.toUpperCase()),
-          h('span', null, new Date(entry.updated_at).toLocaleDateString())
+          h('div', { className: 'flex items-center gap-2' },
+            h('span', null, new Date(entry.updated_at).toLocaleDateString()),
+            h('button', {
+              onClick: async () => { await DEL(`/api/brain/${entry.id}`); load(); },
+              className: 'text-[hsl(var(--muted))] hover:text-[hsl(0_72%_51%)] transition-colors text-xs'
+            }, '✕')
+          )
         ),
         h('h4', { className: 'font-semibold text-sm mt-1' }, entry.title),
         h('p', { className: 'text-xs mt-1 whitespace-pre-wrap' }, entry.content)
@@ -926,25 +960,111 @@ function BrainPanel({ projectId }) {
 }
 
 function SettingsPanel({ projectId }) {
-  const [settings, setSettings] = useState({ proposal_template: 'Standard', default_answer_style: 'formal', quote_format: 'bullets' });
+  const [settings, setSettings] = useState({
+    proposal_template: 'Standard', default_answer_style: 'formal',
+    quote_format: 'bullets', ai_model: '@cf/moonshotai/kimi-k2.6', ai_autonomy: 'assisted'
+  });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!projectId) return;
+    setLoading(true);
+    GET(`/api/settings?project_id=${projectId}`).then(r => {
+      if (r.data) setSettings(r.data);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, [projectId]);
+
+  const save = async () => {
+    setSaving(true); setError(''); setSaved(false);
+    try {
+      await POST('/api/settings', { project_id: projectId, ...settings });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Save failed');
+    } finally { setSaving(false); }
+  };
+
+  const inputCls = 'w-full bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-2 py-2 text-xs text-[hsl(var(--fg))]';
+  const selectCls = inputCls + ' cursor-pointer';
+
+  const autonomyDesc = {
+    assisted: 'Agent drafts responses, you approve every action before it runs',
+    auto_draft: 'Agent drafts content automatically, asks before external actions',
+    full_auto: 'Agent completes multi-step tasks without pausing unless truly ambiguous'
+  };
+
+  const capabilities = [
+    { name: 'AI Agents (Research/Writer/Editor/Pricing)', status: 'Active' },
+    { name: 'Compliance Matrix Automation', status: 'Active' },
+    { name: 'DOCX Export', status: 'Active' },
+    { name: 'Authentication', status: 'Active' },
+    { name: 'Billing', status: 'Coming soon' },
+  ];
 
   return h('div', { className: 'flex flex-col h-full' },
     h('div', { className: 'p-4 border-b border-[hsl(var(--border))]' },
       h('h3', { className: 'font-semibold text-sm' }, 'Workspace Settings'),
-      h('p', { className: 'text-xs text-[hsl(var(--muted))] mt-1' }, 'Lightweight settings for project-level knowledge operations.')
+      h('p', { className: 'text-xs text-[hsl(var(--muted))] mt-1' }, 'Project-level AI and proposal configuration.')
     ),
-    h('div', { className: 'flex-1 overflow-y-auto p-4 space-y-3' },
-      ['proposal_template','default_answer_style','quote_format'].map(key =>
-        h('div', { key, className: 'space-y-1' },
-          h('label', { className: 'text-xs font-medium text-[hsl(var(--muted))]' }, key.replace('_', ' ').toUpperCase()),
-          h('input', {
-            value: settings[key],
-            onChange: e => setSettings(prev => ({ ...prev, [key]: e.target.value })),
-            className: 'w-full bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-2 py-2 text-xs'
-          })
+    h('div', { className: 'flex-1 overflow-y-auto p-4 space-y-4' },
+      loading ? h('div', { className: 'shimmer h-40 rounded-xl' }) : h('div', { className: 'space-y-4' },
+        // Proposal template
+        h('div', { className: 'space-y-1' },
+          h('label', { className: 'text-xs font-medium text-[hsl(var(--muted))]' }, 'PROPOSAL TEMPLATE'),
+          h('input', { value: settings.proposal_template ?? 'Standard', onChange: e => setSettings(p => ({...p, proposal_template: e.target.value})), className: inputCls })
+        ),
+        // Answer style
+        h('div', { className: 'space-y-1' },
+          h('label', { className: 'text-xs font-medium text-[hsl(var(--muted))]' }, 'DEFAULT ANSWER STYLE'),
+          h('select', { value: settings.default_answer_style ?? 'formal', onChange: e => setSettings(p => ({...p, default_answer_style: e.target.value})), className: selectCls },
+            ['formal','conversational','technical'].map(s => h('option', { key: s, value: s }, s)))
+        ),
+        // Quote format
+        h('div', { className: 'space-y-1' },
+          h('label', { className: 'text-xs font-medium text-[hsl(var(--muted))]' }, 'QUOTE FORMAT'),
+          h('select', { value: settings.quote_format ?? 'bullets', onChange: e => setSettings(p => ({...p, quote_format: e.target.value})), className: selectCls },
+            ['bullets','prose','table'].map(s => h('option', { key: s, value: s }, s)))
+        ),
+        // AI Model
+        h('div', { className: 'space-y-1' },
+          h('label', { className: 'text-xs font-medium text-[hsl(var(--muted))]' }, 'AI MODEL'),
+          h('select', { value: settings.ai_model ?? '@cf/moonshotai/kimi-k2.6', onChange: e => setSettings(p => ({...p, ai_model: e.target.value})), className: selectCls },
+            h('option', { value: '@cf/moonshotai/kimi-k2.6' }, 'Kimi K2.6 (default)'),
+            h('option', { value: '@cf/moonshotai/kimi-k2.7-code' }, 'Kimi K2.7 Code'),
+            h('option', { value: '@cf/zai-org/glm-4.7-flash' }, 'GLM 4.7 Flash (fastest)'))
+        ),
+        // AI Autonomy
+        h('div', { className: 'space-y-1' },
+          h('label', { className: 'text-xs font-medium text-[hsl(var(--muted))]' }, 'AI AUTONOMY'),
+          h('select', { value: settings.ai_autonomy ?? 'assisted', onChange: e => setSettings(p => ({...p, ai_autonomy: e.target.value})), className: selectCls },
+            ['assisted','auto_draft','full_auto'].map(s => h('option', { key: s, value: s }, s))),
+          h('p', { className: 'text-xs text-[hsl(var(--muted))]' }, autonomyDesc[settings.ai_autonomy ?? 'assisted'] ?? '')
+        ),
+        // Save button + status
+        h('div', { className: 'flex items-center gap-3' },
+          h(Btn, { variant: 'primary', size: 'sm', onClick: save, disabled: saving }, saving ? 'Saving...' : 'Save Settings'),
+          saved && h('span', { className: 'text-xs text-[hsl(142_70%_45%)] animate-fade-in' }, '✓ Saved'),
+          error && h('span', { className: 'text-xs text-[hsl(0_72%_51%)]' }, error)
+        ),
+        // System status
+        h('div', { className: 'mt-4 pt-4 border-t border-[hsl(var(--border))]' },
+          h('h4', { className: 'text-xs font-semibold text-[hsl(var(--muted))] mb-2' }, 'SYSTEM STATUS'),
+          h('div', { className: 'space-y-1.5' },
+            capabilities.map(cap => h('div', { key: cap.name, className: 'flex items-center justify-between text-xs' },
+              h('span', { className: 'text-[hsl(var(--fg))]' }, cap.name),
+              h('span', {
+                className: cap.status === 'Active'
+                  ? 'text-[hsl(142_70%_45%)]' : 'text-[hsl(38_92%_50%)]'
+              }, cap.status === 'Active' ? '● Active' : '◐ Coming soon')
+            ))
+          )
         )
-      ),
-      h(Btn, { variant: 'primary', size: 'sm', onClick: () => alert('Saved settings (demo)') }, 'Save Settings')
+      )
     )
   );
 }
@@ -1208,6 +1328,276 @@ function SplitPanel({ left, right, defaultLeftWidth = 55 }) {
 // Main App
 // ──────────────────────────────────────────
 
+
+// ──────────────────────────────────────────
+// Auth Pages
+// ──────────────────────────────────────────
+
+function LoginPage() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setLoading(true); setError('');
+    try {
+      const r = await POST('/api/auth/login', { email, password });
+      if (r.data?.token) {
+        localStorage.setItem('auth_token', r.data.token);
+        localStorage.setItem('auth_user', JSON.stringify(r.data.user || {}));
+        localStorage.setItem('auth_org', JSON.stringify(r.data.org || {}));
+        window.location.href = '/';
+      } else {
+        setError('No token received');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Login failed');
+    } finally { setLoading(false); }
+  };
+
+  return h('div', { className: 'min-h-screen flex items-center justify-center bg-[hsl(var(--bg))] p-4' },
+    h('div', { className: 'w-full max-w-sm space-y-5' },
+      h('div', { className: 'flex items-center gap-2.5 justify-center mb-2' },
+        h('div', { className: 'w-8 h-8 rounded-lg bg-[hsl(var(--primary))] flex items-center justify-center' },
+          h('span', { className: 'text-sm font-bold text-black' }, '✦')),
+        h('span', { className: 'font-bold text-lg tracking-tight text-[hsl(var(--fg))]' }, 'MurryAI')),
+      h('h1', { className: 'text-xl font-semibold text-center text-[hsl(var(--fg))]' }, 'Welcome back'),
+      h('form', { onSubmit: submit, className: 'space-y-3' },
+        h('input', { type: 'email', placeholder: 'Email', value: email, onChange: e => setEmail(e.target.value),
+          className: 'w-full bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-3 py-2.5 text-sm text-[hsl(var(--fg))] focus:border-[hsl(var(--primary))] focus:outline-none', required: true }),
+        h('input', { type: 'password', placeholder: 'Password', value: password, onChange: e => setPassword(e.target.value),
+          className: 'w-full bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-3 py-2.5 text-sm text-[hsl(var(--fg))] focus:border-[hsl(var(--primary))] focus:outline-none', required: true }),
+        error && h('p', { className: 'text-xs text-[hsl(0_72%_51%)]' }, error),
+        h('button', { type: 'submit', disabled: loading,
+          className: 'w-full bg-[hsl(var(--primary))] text-black font-medium rounded-lg px-3 py-2.5 text-sm hover:brightness-110 transition-all disabled:opacity-50 cursor-pointer' },
+          loading ? 'Signing in...' : 'Sign In')
+      ),
+      h('div', { className: 'flex justify-between text-xs' },
+        h('a', { href: '/register', className: 'text-[hsl(var(--primary))] hover:underline' }, 'Create account'),
+        h('a', { href: '/forgot-password', className: 'text-[hsl(var(--muted))] hover:underline' }, 'Forgot password?')
+      )
+    )
+  );
+}
+
+function RegisterPage() {
+  const [form, setForm] = useState({ firstName: '', lastName: '', email: '', password: '', orgName: '' });
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const pwHint = form.password.length < 8 ? 'Min 8 chars' : !/[A-Z]/.test(form.password) ? 'Add uppercase' : !/[0-9]/.test(form.password) ? 'Add number' : !/[^A-Za-z0-9]/.test(form.password) ? 'Add special char' : '';
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (pwHint) { setError('Password: ' + pwHint); return; }
+    setLoading(true); setError('');
+    try {
+      await POST('/api/auth/register', {
+        first_name: form.firstName, last_name: form.lastName,
+        email: form.email, password: form.password, org_name: form.orgName
+      });
+      setSuccess(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Registration failed');
+    } finally { setLoading(false); }
+  };
+
+  if (success) return h('div', { className: 'min-h-screen flex items-center justify-center bg-[hsl(var(--bg))] p-4' },
+    h('div', { className: 'w-full max-w-sm text-center space-y-4' },
+      h('div', { className: 'w-12 h-12 rounded-full bg-[hsl(142_70%_45%/0.15)] flex items-center justify-center mx-auto' }, h('span', { className: 'text-xl' }, '✓')),
+      h('h1', { className: 'text-lg font-semibold text-[hsl(var(--fg))]' }, 'Account created!'),
+      h('p', { className: 'text-sm text-[hsl(var(--muted))]' }, 'Check your email to verify your account, then log in.'),
+      h('a', { href: '/login', className: 'text-[hsl(var(--primary))] hover:underline text-sm' }, 'Go to login'))
+  );
+
+  const inputCls = 'w-full bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-3 py-2.5 text-sm text-[hsl(var(--fg))] focus:border-[hsl(var(--primary))] focus:outline-none';
+
+  return h('div', { className: 'min-h-screen flex items-center justify-center bg-[hsl(var(--bg))] p-4' },
+    h('div', { className: 'w-full max-w-sm space-y-4' },
+      h('div', { className: 'flex items-center gap-2.5 justify-center mb-2' },
+        h('div', { className: 'w-8 h-8 rounded-lg bg-[hsl(var(--primary))] flex items-center justify-center' },
+          h('span', { className: 'text-sm font-bold text-black' }, '✦')),
+        h('span', { className: 'font-bold text-lg tracking-tight text-[hsl(var(--fg))]' }, 'MurryAI')),
+      h('h1', { className: 'text-xl font-semibold text-center text-[hsl(var(--fg))]' }, 'Create your account'),
+      h('form', { onSubmit: submit, className: 'space-y-3' },
+        h('div', { className: 'grid grid-cols-2 gap-2' },
+          h('input', { placeholder: 'First name', value: form.firstName, onChange: e => setForm(p => ({...p, firstName: e.target.value})), className: inputCls, required: true }),
+          h('input', { placeholder: 'Last name', value: form.lastName, onChange: e => setForm(p => ({...p, lastName: e.target.value})), className: inputCls, required: true })),
+        h('input', { type: 'email', placeholder: 'Email', value: form.email, onChange: e => setForm(p => ({...p, email: e.target.value})), className: inputCls, required: true }),
+        h('div', null,
+          h('input', { type: 'password', placeholder: 'Password', value: form.password, onChange: e => setForm(p => ({...p, password: e.target.value})), className: inputCls, required: true }),
+          pwHint && h('p', { className: 'text-xs text-[hsl(38_92%_50%)] mt-1' }, pwHint)),
+        h('input', { placeholder: 'Organization / Company', value: form.orgName, onChange: e => setForm(p => ({...p, orgName: e.target.value})), className: inputCls, required: true }),
+        error && h('p', { className: 'text-xs text-[hsl(0_72%_51%)]' }, error),
+        h('button', { type: 'submit', disabled: loading,
+          className: 'w-full bg-[hsl(var(--primary))] text-black font-medium rounded-lg px-3 py-2.5 text-sm hover:brightness-110 transition-all disabled:opacity-50 cursor-pointer' },
+          loading ? 'Creating...' : 'Create Account')
+      ),
+      h('p', { className: 'text-xs text-center text-[hsl(var(--muted))]' },
+        'Already have an account? ', h('a', { href: '/login', className: 'text-[hsl(var(--primary))] hover:underline' }, 'Sign in'))
+    )
+  );
+}
+
+function ForgotPasswordPage() {
+  const [email, setEmail] = useState('');
+  const [sent, setSent] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try { await POST('/api/auth/forgot-password', { email }); } catch {}
+    setSent(true); setLoading(false);
+  };
+
+  if (sent) return h('div', { className: 'min-h-screen flex items-center justify-center bg-[hsl(var(--bg))] p-4' },
+    h('div', { className: 'w-full max-w-sm text-center space-y-4' },
+      h('h1', { className: 'text-lg font-semibold text-[hsl(var(--fg))]' }, 'Check your email'),
+      h('p', { className: 'text-sm text-[hsl(var(--muted))]' }, 'If that email exists, a reset link is on its way.'),
+      h('a', { href: '/login', className: 'text-[hsl(var(--primary))] hover:underline text-sm' }, 'Back to login'))
+  );
+
+  return h('div', { className: 'min-h-screen flex items-center justify-center bg-[hsl(var(--bg))] p-4' },
+    h('div', { className: 'w-full max-w-sm space-y-4' },
+      h('h1', { className: 'text-xl font-semibold text-center text-[hsl(var(--fg))]' }, 'Reset your password'),
+      h('form', { onSubmit: submit, className: 'space-y-3' },
+        h('input', { type: 'email', placeholder: 'Email', value: email, onChange: e => setEmail(e.target.value),
+          className: 'w-full bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-3 py-2.5 text-sm text-[hsl(var(--fg))] focus:border-[hsl(var(--primary))] focus:outline-none', required: true }),
+        h('button', { type: 'submit', disabled: loading,
+          className: 'w-full bg-[hsl(var(--primary))] text-black font-medium rounded-lg px-3 py-2.5 text-sm hover:brightness-110 transition-all disabled:opacity-50 cursor-pointer' },
+          loading ? 'Sending...' : 'Send Reset Link')
+      ),
+      h('a', { href: '/login', className: 'block text-center text-xs text-[hsl(var(--muted))] hover:underline' }, 'Back to login'))
+  );
+}
+
+function ResetPasswordPage() {
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get('token');
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [error, setError] = useState('');
+  const [done, setDone] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  if (!token) return h('div', { className: 'min-h-screen flex items-center justify-center bg-[hsl(var(--bg))] p-4' },
+    h('div', { className: 'w-full max-w-sm text-center space-y-4' },
+      h('h1', { className: 'text-lg font-semibold text-[hsl(0_72%_51%)]' }, 'Invalid or missing reset link'),
+      h('a', { href: '/forgot-password', className: 'text-[hsl(var(--primary))] hover:underline text-sm' }, 'Request a new link'))
+  );
+
+  if (done) return h('div', { className: 'min-h-screen flex items-center justify-center bg-[hsl(var(--bg))] p-4' },
+    h('div', { className: 'w-full max-w-sm text-center space-y-4' },
+      h('div', { className: 'w-12 h-12 rounded-full bg-[hsl(142_70%_45%/0.15)] flex items-center justify-center mx-auto' }, h('span', { className: 'text-xl' }, '✓')),
+      h('h1', { className: 'text-lg font-semibold text-[hsl(var(--fg))]' }, 'Password reset!'),
+      h('p', { className: 'text-sm text-[hsl(var(--muted))]' }, 'You can now log in with your new password.'),
+      h('a', { href: '/login', className: 'text-[hsl(var(--primary))] hover:underline text-sm' }, 'Go to login'))
+  );
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (password !== confirm) { setError('Passwords do not match'); return; }
+    if (password.length < 8) { setError('Password must be at least 8 characters'); return; }
+    setLoading(true); setError('');
+    try {
+      await POST('/api/auth/reset-password', { token, password });
+      setDone(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Reset failed');
+    } finally { setLoading(false); }
+  };
+
+  const inputCls = 'w-full bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-3 py-2.5 text-sm text-[hsl(var(--fg))] focus:border-[hsl(var(--primary))] focus:outline-none';
+
+  return h('div', { className: 'min-h-screen flex items-center justify-center bg-[hsl(var(--bg))] p-4' },
+    h('div', { className: 'w-full max-w-sm space-y-4' },
+      h('h1', { className: 'text-xl font-semibold text-center text-[hsl(var(--fg))]' }, 'Set a new password'),
+      h('form', { onSubmit: submit, className: 'space-y-3' },
+        h('input', { type: 'password', placeholder: 'New password', value: password, onChange: e => setPassword(e.target.value), className: inputCls, required: true }),
+        h('input', { type: 'password', placeholder: 'Confirm password', value: confirm, onChange: e => setConfirm(e.target.value), className: inputCls, required: true }),
+        error && h('p', { className: 'text-xs text-[hsl(0_72%_51%)]' }, error),
+        h('button', { type: 'submit', disabled: loading,
+          className: 'w-full bg-[hsl(var(--primary))] text-black font-medium rounded-lg px-3 py-2.5 text-sm hover:brightness-110 transition-all disabled:opacity-50 cursor-pointer' },
+          loading ? 'Resetting...' : 'Reset Password')
+      )
+    )
+  );
+}
+
+// ──────────────────────────────────────────
+// Pricing Page
+// ──────────────────────────────────────────
+
+function PricingPage() {
+  const [waitlist, setWaitlist] = useState(null);
+  const tiers = [
+    { name: 'Free', price: '$0', period: '/mo', features: ['3 proposals/mo', '1 user', '100MB storage', 'Community support'], cta: 'Get Started Free', href: '/register', highlight: false },
+    { name: 'Starter', price: '$49', period: '/mo', features: ['25 proposals/mo', '3 users', '5GB storage', 'AI proposal generation', 'Email support'], cta: 'Start Free Trial', highlight: false, plan: 'starter' },
+    { name: 'Pro', price: '$149', period: '/mo', features: ['Unlimited proposals', '10 users', '50GB storage', 'All AI agents', 'Compliance automation', 'Priority support'], cta: 'Start Free Trial', highlight: true, plan: 'pro' },
+    { name: 'Enterprise', price: 'Custom', period: '', features: ['Unlimited everything', 'SSO', 'Dedicated support', 'Custom integrations'], cta: 'Contact Sales', highlight: false, plan: 'enterprise' },
+  ];
+
+  const cardCls = (highlight) => `relative rounded-2xl border p-6 ${highlight ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary)/0.05)]' : 'border-[hsl(var(--border))] bg-[hsl(var(--card))]'}`;
+
+  return h('div', { className: 'min-h-screen bg-[hsl(var(--bg))] text-[hsl(var(--fg))]' },
+    h('div', { className: 'max-w-6xl mx-auto px-4 py-16' },
+      h('div', { className: 'flex items-center gap-2.5 justify-center mb-3' },
+        h('div', { className: 'w-8 h-8 rounded-lg bg-[hsl(var(--primary))] flex items-center justify-center' },
+          h('span', { className: 'text-sm font-bold text-black' }, '✦')),
+        h('span', { className: 'font-bold text-lg tracking-tight' }, 'MurryAI')),
+      h('h1', { className: 'text-3xl font-bold text-center mb-2' }, 'Simple, transparent pricing'),
+      h('p', { className: 'text-sm text-[hsl(var(--muted))] text-center mb-10' }, 'AI-powered proposal intelligence for teams of every size'),
+      h('div', { className: 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-12' },
+        tiers.map((tier) =>
+          h('div', { key: tier.name, className: cardCls(tier.highlight) },
+            tier.highlight && h('div', { className: 'absolute -top-3 left-1/2 -translate-x-1/2' },
+              h('span', { className: 'bg-[hsl(var(--primary))] text-black text-xs font-medium px-3 py-1 rounded-full' }, 'Most Popular')),
+            h('h3', { className: 'font-semibold text-sm' }, tier.name),
+            h('div', { className: 'flex items-baseline gap-1 mt-2 mb-4' },
+              h('span', { className: 'text-2xl font-bold' }, tier.price),
+              h('span', { className: 'text-sm text-[hsl(var(--muted))]' }, tier.period)),
+            h('ul', { className: 'space-y-2 mb-6' },
+              tier.features.map((f) => h('li', { key: f, className: 'flex items-center gap-2 text-xs text-[hsl(var(--muted))]' },
+                h('span', { className: 'text-[hsl(var(--primary))]' }, '✓'), f))),
+            tier.plan === 'enterprise'
+              ? h('a', { href: 'mailto:lawrence@murryconsultancy.com?subject=Enterprise%20Inquiry',
+                  className: 'block w-full text-center bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-3 py-2.5 text-sm font-medium hover:bg-[hsl(var(--border))] transition-all' }, tier.cta)
+              : tier.plan
+              ? h('button', {
+                  onClick: () => setWaitlist(tier.plan),
+                  className: `w-full rounded-lg px-3 py-2.5 text-sm font-medium transition-all cursor-pointer ${tier.highlight ? 'bg-[hsl(var(--primary))] text-black hover:brightness-110' : 'bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] hover:bg-[hsl(var(--border))]'}`
+                }, tier.cta)
+              : h('a', { href: tier.href,
+                  className: `block w-full text-center rounded-lg px-3 py-2.5 text-sm font-medium transition-all ${tier.highlight ? 'bg-[hsl(var(--primary))] text-black hover:brightness-110' : 'bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] hover:bg-[hsl(var(--border))]'}` }, tier.cta)
+          )
+        )
+      ),
+      waitlist && h('div', { className: 'fixed bottom-6 right-6 bg-[hsl(var(--card))] border border-[hsl(var(--primary))] rounded-xl p-4 max-w-sm shadow-lg animate-fade-in' },
+        h('p', { className: 'text-sm font-medium mb-1' }, 'Billing launches soon!'),
+        h('p', { className: 'text-xs text-[hsl(var(--muted))] mb-2' }, 'Join the waitlist for early access:'),
+        h('a', { href: `mailto:lawrence@murryconsultancy.com?subject=${waitlist} Plan Waitlist`,
+          className: 'text-sm text-[hsl(var(--primary))] hover:underline' }, `Email us about the ${waitlist} plan`),
+        h('button', { onClick: () => setWaitlist(null), className: 'absolute top-2 right-2 text-[hsl(var(--muted))] hover:text-[hsl(var(--fg))] text-xs' }, '✕')),
+      // FAQ
+      h('div', { className: 'max-w-2xl mx-auto' },
+        h('h2', { className: 'text-lg font-semibold mb-4 text-center' }, 'Frequently asked questions'),
+        [
+          { q: 'Can I change plans later?', a: 'Yes — upgrade or downgrade anytime. Changes take effect at the next billing cycle.' },
+          { q: 'Is there a free trial?', a: 'The Free plan is free forever with no credit card. Paid plans will offer a trial once billing launches.' },
+          { q: 'What happens if I exceed my plan limits?', a: 'You can still view and manage existing proposals. New proposals will be blocked until the next cycle or an upgrade.' },
+        ].map((faq) => h('div', { key: faq.q, className: 'border-b border-[hsl(var(--border))] py-4' },
+          h('h3', { className: 'text-sm font-medium mb-1' }, faq.q),
+          h('p', { className: 'text-xs text-[hsl(var(--muted))]' }, faq.a)
+        ))
+      )
+    )
+  );
+}
+
 function App() {
   const [darkMode, setDarkMode] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -1239,11 +1629,12 @@ function App() {
   ];
 
   const RightPanel = activeProject
-    ? rightTab === 'documents' ? h(DocumentsPanel, { projectId: activeProject.id, key: activeProject.id })
+    ? (rightTab === 'documents' ? h(DocumentsPanel, { projectId: activeProject.id, key: activeProject.id })
     : rightTab === 'qa' ? h(QAPanel, { projectId: activeProject.id, key: activeProject.id })
-    : rightTab === 'brain' ? h(BrainPanel, { projectId: activeProject.id, key: activeProject.id })
+    : rightTab === 'brain' ? h(BrainPanel, { projectId: activeProject.id, conversationId: convId, key: activeProject.id })
     : rightTab === 'compliance' ? h(CompliancePanel, { projectId: activeProject.id, key: activeProject.id })
     : rightTab === 'settings' ? h(SettingsPanel, { projectId: activeProject.id, key: activeProject.id })
+    : null)
     : h('div', { className: 'flex items-center justify-center h-full text-sm text-[hsl(var(--muted))]' },
         'Select or create a project to get started'
       );
@@ -1285,6 +1676,8 @@ function App() {
             : h('span', { className: 'text-sm text-[hsl(var(--muted))]' }, 'No project selected')
         ),
         h('div', { className: 'ml-auto flex items-center gap-2' },
+          h('a', { href: '/pricing', className: 'text-xs text-[hsl(var(--muted))] hover:text-[hsl(var(--fg))] transition-colors px-2' }, 'Pricing'),
+          h('a', { href: '/login', className: 'text-xs text-[hsl(var(--muted))] hover:text-[hsl(var(--fg))] transition-colors px-2' }, 'Login'),
           // Layout toggles
           [
             { id: 'split', icon: 'workflow', title: 'Split view' },
@@ -1309,7 +1702,17 @@ function App() {
   );
 }
 
-createRoot(document.getElementById('root')).render(h(App));
+function Root() {
+  const path = window.location.pathname;
+  if (path === '/login') return h(LoginPage);
+  if (path === '/register') return h(RegisterPage);
+  if (path === '/forgot-password') return h(ForgotPasswordPage);
+  if (path === '/reset-password') return h(ResetPasswordPage);
+  if (path === '/pricing') return h(PricingPage);
+  return h(App);
+}
+
+createRoot(document.getElementById('root')).render(h(Root));
 </script>
 </body>
 </html>

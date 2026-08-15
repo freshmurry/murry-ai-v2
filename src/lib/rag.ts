@@ -4,7 +4,7 @@
 // ================================================================
 
 import type { Env, Citation, SearchResult, RAGContext, DocumentChunk } from '../types';
-import { AnthropicClient } from './anthropic';
+import { runAiWithFallback } from '../agents/utils';
 
 // ──────────────────────────────────────────
 // Embedding
@@ -145,7 +145,7 @@ export async function semanticSearch(
 export async function rerankResults(
   query: string,
   candidates: SearchResult[],
-  client: AnthropicClient,
+  env: Env,
   topN = 5
 ): Promise<SearchResult[]> {
   if (candidates.length <= topN) return candidates;
@@ -162,7 +162,7 @@ Return ONLY a JSON array of the chunk numbers in order from most to least releva
 selecting the top ${topN} most relevant chunks. Example: [3, 1, 5, 2, 4]`;
 
   try {
-    const response = await client.generateText(prompt, undefined, 256);
+    const response = await runAiWithFallback(env, 'You are a relevance ranking system. Output only a JSON array of numbers.', prompt);
     const match = response.match(/\[[\d,\s]+\]/);
     if (!match) return candidates.slice(0, topN);
 
@@ -228,9 +228,8 @@ export async function executeRAG(
     .filter(Boolean) as SearchResult[];
 
   // 4. Optional LLM reranking
-  if (options.rerank && env.ANTHROPIC_API_KEY) {
-    const client = new AnthropicClient(env.ANTHROPIC_API_KEY);
-    results = await rerankResults(query, results, client, 6);
+  if (options.rerank) {
+    results = await rerankResults(query, results, env, 6);
   } else {
     results = results.slice(0, 8);
   }

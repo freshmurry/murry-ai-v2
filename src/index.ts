@@ -12,13 +12,29 @@ import {
   handleCompliance,
   handleConversations,
   handleBrain,
+  handleBrainExtract,
+  handleSettings,
   handleWorkflows,
 } from './api/handlers';
+import {
+  handleRegister,
+  handleVerifyEmail,
+  handleLogin,
+  handleForgotPassword,
+  handleResetPassword,
+  handleLogout,
+} from "./api/auth-handlers";
+import { handleExportDocx } from './api/export-handlers';
 import { ConversationDurableObject } from './durable-objects/ConversationDO';
 import { DocumentIngestionWorkflow } from './workflows/DocumentIngestionWorkflow';
+import { ProposalAgent } from './agents/ProposalAgent';
+import { ResearchAgent } from './agents/ResearchAgent';
+import { WriterAgent } from './agents/WriterAgent';
+import { EditorAgent } from './agents/EditorAgent';
+import { PricingAgent } from './agents/PricingAgent';
 
 // Re-export imported classes so Wrangler can find them
-export { ConversationDurableObject, DocumentIngestionWorkflow };
+export { ConversationDurableObject, DocumentIngestionWorkflow, ProposalAgent, ResearchAgent, WriterAgent, EditorAgent, PricingAgent };
 
 // ──────────────────────────────────────────
 // ProjectDurableObject
@@ -163,6 +179,18 @@ export default {
 // ──────────────────────────────────────────
 
 async function routeAPI(request: Request, env: Env, pathname: string): Promise<Response> {
+  if (pathname === "/api/auth/register") return handleRegister(request, env);
+  if (pathname === "/api/auth/verify-email") return handleVerifyEmail(request, env);
+  if (pathname === "/api/auth/login") return handleLogin(request, env);
+  if (pathname === "/api/auth/forgot-password") return handleForgotPassword(request, env);
+  if (pathname === "/api/auth/reset-password") return handleResetPassword(request, env);
+  if (pathname === "/api/auth/logout") return handleLogout(request, env);
+
+  const exportMatch = pathname.match(/^\/api\/proposals\/([^/]+)\/export$/);
+  if (exportMatch && request.method === 'GET') {
+    return handleExportDocx(request, env, exportMatch[1]);
+  }
+
   if (pathname.match(/^\/api\/projects(\/.*)?$/))
     return handleProjects(request, env);
 
@@ -181,8 +209,14 @@ async function routeAPI(request: Request, env: Env, pathname: string): Promise<R
   if (pathname.match(/^\/api\/conversations(\/.*)?$/))
     return handleConversations(request, env);
 
+  if (pathname === '/api/brain/extract' && request.method === 'POST')
+    return handleBrainExtract(request, env);
+
   if (pathname.match(/^\/api\/brain(\/.*)?$/))
     return handleBrain(request, env);
+
+  if (pathname.match(/^\/api\/settings(\/.*)?$/))
+    return handleSettings(request, env);
 
   if (pathname === '/api/chat' && request.method === 'POST')
     return handleChat(request, env);
@@ -244,10 +278,12 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
 }
 
 async function handleChat(request: Request, env: Env): Promise<Response> {
-  const body = await request.json() as { conversation_id?: string; project_id?: string; content: string };
+  const body = await request.json() as { conversation_id?: string; project_id?: string; content: string; mode?: string };
   if (!body.content?.trim()) return apiError('content is required', 400);
 
+  const { runAgent } = await import('./agents/ProposalAgent');
   const conversationId = body.conversation_id || generateId('conv');
+  const mode = body.mode ?? 'general';
 
   // Ensure conversation exists
   const existing = await env.DB.prepare('SELECT id FROM conversations WHERE id = ?').bind(conversationId).first();
@@ -256,77 +292,100 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       conversationId,
       body.project_id ?? null,
       'Chat conversation',
-      'chat'
+      mode
     ).run();
   }
 
+  // Save the user's message first
   const userMessageId = generateId('msg');
   await env.DB.prepare('INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, ?, ?)')
     .bind(userMessageId, conversationId, 'user', body.content)
     .run();
 
-  // Simple deterministic assistant response with subtle RAG context from documents
-  let responseText = `Got it. I heard: "${body.content.trim()}".`;
-  if (body.project_id) {
-    const docs = await env.DB.prepare('SELECT name FROM documents WHERE project_id = ? LIMIT 2')
-      .bind(body.project_id).all<{ name: string }>();
-    if (docs.results.length > 0) {
-      responseText += ` I also found ${docs.results.length} knowledge documents in this project: ${docs.results.map(d => d.name).join(', ')}.`;
-    }
+  // Load prior turns for context (last 40 messages, chronological, excluding
+  // the one we just saved — runAgent takes the new message separately)
+  const priorMsgs = await env.DB.prepare(
+    `SELECT role, content FROM messages WHERE conversation_id = ? AND role IN ('user','assistant') ORDER BY created_at DESC LIMIT 41`
+  ).bind(conversationId).all<{ role: string; content: string }>();
+  const history = priorMsgs.results
+    .reverse()
+    .slice(0, -1) // drop the user message we just inserted — passed separately below
+    .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+
+  // Collect streamed events (tool calls, citations, approvals) so the plain
+  // HTTP caller still sees full agent activity, not just the final text.
+  const streamEvents: unknown[] = [];
+
+  try {
+    // Run the REAL agentic loop — Claude + tool use (search_knowledge_base,
+    // create_compliance_matrix, generate_executive_summary, human-in-the-loop
+    // approvals, etc.) — same agent the WebSocket path uses.
+    const assistantMessage = await runAgent(
+      body.content,
+      history,
+      env,
+      conversationId,
+      body.project_id,
+      mode,
+      async (event) => { streamEvents.push(event); }
+    );
+
+    await env.DB.prepare(`
+      INSERT INTO messages (id, conversation_id, role, content, tool_calls, citations, agent_thoughts, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      assistantMessage.id,
+      conversationId,
+      assistantMessage.role,
+      assistantMessage.content,
+      assistantMessage.tool_calls ? JSON.stringify(assistantMessage.tool_calls) : null,
+      assistantMessage.citations ? JSON.stringify(assistantMessage.citations) : null,
+      assistantMessage.agent_thoughts ?? null,
+      assistantMessage.metadata ? JSON.stringify(assistantMessage.metadata) : null
+    ).run();
+
+    const messages = await env.DB.prepare('SELECT id, role, content, tool_calls, citations, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC')
+      .bind(conversationId).all();
+
+    return apiJson({
+      success: true,
+      data: {
+        conversation_id: conversationId,
+        response: assistantMessage.content,
+        tool_calls: assistantMessage.tool_calls ?? [],
+        citations: assistantMessage.citations ?? [],
+        events: streamEvents,
+        messages: messages.results,
+      },
+    });
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    return apiError(`Agent error: ${errMsg}`, 500);
   }
-
-  const assistantMessageId = generateId('msg');
-  await env.DB.prepare('INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, ?, ?)')
-    .bind(assistantMessageId, conversationId, 'assistant', responseText)
-    .run();
-
-  const messages = await env.DB.prepare('SELECT id, role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC')
-    .bind(conversationId).all();
-
-  return apiJson({ success: true, data: { conversation_id: conversationId, response: responseText, messages: messages.results } });
 }
-
-// ──────────────────────────────────────────
-// Task Approval
-// ──────────────────────────────────────────
 
 async function handleTaskApproval(request: Request, env: Env, pathname: string): Promise<Response> {
-  const match = pathname.match(/^\/api\/tasks\/([^/]+)\/approve$/);
-  if (!match) return apiError('Invalid task approval path', 400);
+  const taskId = pathname.split('/')[3];
+  if (!taskId) return apiError('task_id required', 400);
 
-  const taskId = match[1];
-  const body = await request.json() as { approved: boolean; reason?: string; conversation_id: string };
+  const body = await request.json() as { approved: boolean; reason?: string };
 
-  const task = await env.DB.prepare('SELECT conversation_id FROM agent_tasks WHERE id = ?')
-    .bind(taskId)
-    .first<{ conversation_id: string }>();
-
+  const task = await env.DB.prepare('SELECT * FROM agent_tasks WHERE id = ?').bind(taskId).first();
   if (!task) return apiError('Task not found', 404);
 
-  const convId = body.conversation_id ?? task.conversation_id;
-  const id = env.CONVERSATION_DO.idFromName(convId);
-  const stub = env.CONVERSATION_DO.get(id);
+  const status = body.approved ? 'approved' : 'rejected';
+  await env.DB.prepare('UPDATE agent_tasks SET status = ?, rejection_reason = ?, updated_at = ? WHERE id = ?')
+    .bind(status, body.reason ?? null, new Date().toISOString(), taskId)
+    .run();
 
-  return stub.fetch(new Request('https://internal/approve', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_id: taskId, approved: body.approved, reason: body.reason }),
-  }));
+  return apiJson({ success: true, data: { id: taskId, status } });
 }
 
-// ──────────────────────────────────────────
-// Static Assets (SPA fallback)
-// ──────────────────────────────────────────
-
 async function serveStaticAssets(request: Request, env: Env, pathname: string): Promise<Response> {
-  try {
-    const assetResponse = await env.ASSETS.fetch(request);
-    if (assetResponse.status !== 404) return assetResponse;
-
-    // SPA fallback — serve index.html for all non-API routes
-    const indexRequest = new Request(new URL('/index.html', request.url).toString(), request);
-    return env.ASSETS.fetch(indexRequest);
-  } catch {
-    return new Response('Not Found', { status: 404 });
+  if (env.ASSETS) {
+    return env.ASSETS.fetch(request);
   }
+  return new Response(`MurryAI Asset placeholder for ${pathname}`, {
+    headers: { 'Content-Type': 'text/plain' },
+  });
 }

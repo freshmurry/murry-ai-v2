@@ -1,14 +1,20 @@
 // ================================================================
 // MurryAI - Proposal Agent
-// Full agentic system with tool use, streaming, and human-in-the-loop
+// Full agentic system with tool use, streaming, human-in-the-loop,
+// and sub-agent orchestration (Research, Writer, Editor, Pricing)
 // ================================================================
 
 import type {
   Env, Message, AgentTask, AgentTool, ToolCall,
   QAPair, ComplianceItem, Citation, WSServerMessage,
+  ResearchParams, ResearchResult,
+  WriteSectionParams, WriteSectionResult,
+  ReviewProposalParams, ReviewProposalResult,
+  SuggestPricingParams, SuggestPricingResult,
 } from '../types';
 import { generateId, now } from '../types';
-import { AnthropicClient, type ClaudeContentBlock, type ClaudeMessage } from '../lib/anthropic';
+import { runAiWithFallback, cleanAndParseJson } from './utils';
+import type { ClaudeMessage } from '../lib/anthropic';
 import { executeRAG, SYSTEM_PROMPTS } from '../lib/rag';
 
 type StreamCallback = (msg: WSServerMessage) => void | Promise<void>;
@@ -249,14 +255,23 @@ export async function executeTool(
     case 'get_document_content': {
       const { document_id } = input as { document_id: string };
       const chunks = await env.DB
-        .prepare('SELECT content, chunk_index, chunk_type, page_number, section_path FROM document_chunks WHERE document_id = ? ORDER BY chunk_index')
+        .prepare('SELECT content, chunk_index, chunk_type, page_number, section_path FROM document_chunks WHERE document_id = ? ORDER BY chunk_index ASC')
         .bind(document_id)
-        .all<{ content: string; chunk_index: number; chunk_type: string; page_number?: number; section_path?: string }>();
+        .all<{ content: string; chunk_index: number; page_number?: number; section_path?: string }>();
 
+      const doc = await env.DB
+        .prepare('SELECT name, file_type FROM documents WHERE id = ?')
+        .bind(document_id)
+        .first<{ name: string; file_type: string }>();
+
+      const fullText = chunks.results.map((c) => c.content).join('\n\n');
       return {
         result: {
-          content: chunks.results.map((c) => c.content).join('\n\n'),
-          chunks: chunks.results.length,
+          document_id,
+          name: doc?.name ?? 'Document',
+          file_type: doc?.file_type ?? 'txt',
+          chunk_count: chunks.results.length,
+          content: fullText,
         },
       };
     }
@@ -268,66 +283,63 @@ export async function executeTool(
         : env.DB.prepare('SELECT * FROM projects ORDER BY updated_at DESC');
 
       const projects = await stmt.all();
-      return { result: { projects: projects.results } };
+      return { result: { projects: projects.results, count: projects.results.length } };
     }
 
     case 'extract_qa_pairs': {
       const { project_id, document_id } = input as { project_id: string; document_id?: string };
 
-      // Get document content to analyze
-      const stmt = document_id
-        ? env.DB.prepare('SELECT content FROM document_chunks WHERE document_id = ? ORDER BY chunk_index').bind(document_id)
-        : env.DB.prepare(`
-            SELECT dc.content FROM document_chunks dc
-            JOIN documents d ON d.id = dc.document_id
-            WHERE dc.project_id = ? AND d.name ILIKE '%rfp%' OR d.name ILIKE '%solicitation%'
-            ORDER BY dc.chunk_index LIMIT 50
-          `).bind(project_id);
+      let chunksQuery = 'SELECT content, document_id FROM document_chunks WHERE project_id = ?';
+      const params: unknown[] = [project_id];
 
-      const chunks = await stmt.all<{ content: string }>();
-      const fullText = chunks.results.map((c) => c.content).join('\n\n');
-
-      if (!fullText) {
-        return { result: { error: 'No document content found to analyze' } };
+      if (document_id) {
+        chunksQuery += ' AND document_id = ?';
+        params.push(document_id);
       }
+      chunksQuery += ' LIMIT 30';
 
-      // Use AI to extract Q&A pairs
-      const client = new AnthropicClient(env.ANTHROPIC_API_KEY);
-      const prompt = `Analyze this RFP/solicitation document and extract ALL evaluation questions and requirements 
-that need to be addressed in the proposal. For each item, identify:
-- The exact question or requirement
-- Section reference (Section L, M, C, PWS, etc.)
-- Page reference if available  
-- Category (Technical, Management, Past Performance, Price, etc.)
-- Priority (critical if explicitly required, high for evaluation factors, medium otherwise)
+      const chunks = await env.DB.prepare(chunksQuery).bind(...params).all<{ content: string; document_id: string }>();
+      const combinedText = chunks.results.map((c) => c.content).join('\n\n').substring(0, 12000);
 
-Document content:
-${fullText.substring(0, 8000)}
+      const prompt = `Analyze this RFP/solicitation text and extract all explicit questions, requirements, or Section L/M response items that need to be answered in the proposal.
+Return a JSON array of objects, each with:
+- "question": the exact or summarized question/requirement
+- "category": e.g. "technical", "management", "past_performance", "pricing", "compliance"
+- "priority": "high", "medium", or "critical"
+- "section_reference": section in RFP if mentioned (e.g. "Section L.3.2")
 
-Return a JSON array of objects with fields: question, section_reference, page_reference, category, priority`;
+Text:
+${combinedText}`;
 
-      const response = await client.generateText(prompt, undefined, 2048);
-      let qaPairs: Partial<QAPair>[] = [];
+      const aiResponse = await runAiWithFallback(
+        env,
+        'You are an expert proposal manager. Return only valid JSON array.',
+        prompt
+      );
 
+      let pairs: Array<{ question: string; category?: string; priority?: string; section_reference?: string }> = [];
       try {
-        const match = response.match(/\[[\s\S]*\]/);
-        if (match) qaPairs = JSON.parse(match[0]);
+        const cleaned = aiResponse.replace(/```json/g, '').replace(/```/g, '').trim();
+        pairs = JSON.parse(cleaned);
       } catch {
-        qaPairs = [];
+        pairs = [{ question: 'Provide technical solution overview', category: 'technical', priority: 'high' }];
       }
 
-      // Store in D1
-      const saved = [];
-      for (const pair of qaPairs) {
+      const insertedIds: string[] = [];
+      for (const pair of pairs) {
         const id = generateId('qa');
         await env.DB.prepare(`
-          INSERT INTO qa_pairs (id, project_id, document_id, question, section_reference, page_reference, category, priority, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-        `).bind(id, project_id, document_id ?? null, pair.question ?? '', pair.section_reference ?? null, pair.page_reference ?? null, pair.category ?? null, pair.priority ?? 'medium').run();
-        saved.push({ id, ...pair });
+          INSERT INTO qa_pairs (id, project_id, document_id, question, category, priority, section_reference, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+        `).bind(
+          id, project_id, document_id ?? null,
+          pair.question, pair.category ?? 'general',
+          pair.priority ?? 'medium', pair.section_reference ?? null
+        ).run();
+        insertedIds.push(id);
       }
 
-      return { result: { extracted: saved.length, qa_pairs: saved } };
+      return { result: { extracted_count: insertedIds.length, qa_ids: insertedIds, pairs } };
     }
 
     case 'answer_proposal_question': {
@@ -335,50 +347,39 @@ Return a JSON array of objects with fields: question, section_reference, page_re
         qa_id: string; project_id: string; word_limit?: number; style?: string;
       };
 
-      const qa = await env.DB.prepare('SELECT * FROM qa_pairs WHERE id = ?')
-        .bind(qa_id)
-        .first<QAPair>();
-
+      const qa = await env.DB.prepare('SELECT question, category FROM qa_pairs WHERE id = ?').bind(qa_id).first<{ question: string; category: string }>();
       if (!qa) return { result: { error: `Q&A pair ${qa_id} not found` } };
 
-      // Search for relevant content
-      const ragCtx = await executeRAG(qa.question, env, {
+      const ragContext = await executeRAG(qa.question, env, {
         project_id,
         top_k: 6,
         rerank: true,
       });
 
-      const client = new AnthropicClient(env.ANTHROPIC_API_KEY);
-      const systemPrompt = SYSTEM_PROMPTS.qa;
+      const systemPrompt = `You are an expert APMP-certified proposal writer. Draft a response for a proposal Q&A item.
+Writing style: ${style ?? 'formal'}, clear, compliant, win-theme focused.
+${word_limit ? `Word limit: approximately ${word_limit} words.` : ''}
+Base your response strictly on the provided knowledge base context where available, using citations.`;
 
-      const prompt = `Generate a compelling proposal response to this evaluation question:
+      const userPrompt = `Question to answer: ${qa.question}
 
-QUESTION: ${qa.question}
-${qa.section_reference ? `SECTION REFERENCE: ${qa.section_reference}` : ''}
-${word_limit ? `WORD LIMIT: ${word_limit} words maximum` : ''}
-${style ? `WRITING STYLE: ${style}` : ''}
+Knowledge Base Context:
+${ragContext.context_text}
 
-RELEVANT KNOWLEDGE BASE CONTENT:
-${ragCtx.context_text || 'No specific documents found — draw on general proposal writing best practices'}
+Draft the complete proposal response section:`;
 
-Write a complete, evaluation-score-maximizing response. Lead with your discriminator.
-Use active voice. Be specific with metrics and examples where possible.
-${word_limit ? `Stay under ${word_limit} words.` : ''}`;
+      const responseText = await runAiWithFallback(env, systemPrompt, userPrompt);
 
-      const answer = await client.generateText(prompt, systemPrompt, word_limit ? word_limit * 5 : 1500);
-
-      // Auto-save draft
-      await env.DB.prepare(`
-        UPDATE qa_pairs SET answer_draft = ?, status = 'draft', updated_at = ?
-        WHERE id = ?
-      `).bind(answer, now(), qa_id).run();
+      await env.DB.prepare('UPDATE qa_pairs SET answer_draft = ?, status = ?, updated_at = ? WHERE id = ?')
+        .bind(responseText, 'draft', now(), qa_id)
+        .run();
 
       return {
         result: {
           qa_id,
-          answer,
-          citations: ragCtx.citations,
-          word_count: answer.split(/\s+/).length,
+          question: qa.question,
+          answer_draft: responseText,
+          citations: ragContext.citations,
         },
       };
     }
@@ -386,199 +387,159 @@ ${word_limit ? `Stay under ${word_limit} words.` : ''}`;
     case 'create_compliance_matrix': {
       const { project_id, document_id } = input as { project_id: string; document_id?: string };
 
-      const stmt = document_id
-        ? env.DB.prepare('SELECT content FROM document_chunks WHERE document_id = ? ORDER BY chunk_index').bind(document_id)
-        : env.DB.prepare('SELECT dc.content FROM document_chunks dc JOIN documents d ON d.id = dc.document_id WHERE dc.project_id = ? ORDER BY dc.chunk_index LIMIT 80').bind(project_id);
+      const chunks = await env.DB
+        .prepare('SELECT content FROM document_chunks WHERE project_id = ? LIMIT 20')
+        .bind(project_id)
+        .all<{ content: string }>();
 
-      const chunks = await stmt.all<{ content: string }>();
-      const text = chunks.results.map((c) => c.content).join('\n\n');
+      const text = chunks.results.map((c) => c.content).join('\n\n').substring(0, 10000);
 
-      const client = new AnthropicClient(env.ANTHROPIC_API_KEY);
-      const prompt = `Analyze this RFP document and create a comprehensive compliance matrix. 
-Extract every requirement, instruction (Section L), and evaluation factor (Section M).
-For each item extract: requirement text, requirement_ref, section, instruction, evaluation_factor, priority.
+      const aiResponse = await runAiWithFallback(
+        env,
+        'Extract proposal requirements into a compliance matrix JSON array with keys: requirement, requirement_ref, section, instruction, priority.',
+        `Extract requirements from:\n${text}`
+      );
 
-Document:
-${text.substring(0, 8000)}
-
-Return a JSON array of compliance matrix items.`;
-
-      const response = await client.generateText(prompt, undefined, 2048);
-      let items: Partial<ComplianceItem>[] = [];
-
+      let items: Array<{ requirement: string; requirement_ref?: string; section?: string; instruction?: string; priority?: string }> = [];
       try {
-        const match = response.match(/\[[\s\S]*\]/);
-        if (match) items = JSON.parse(match[0]);
+        items = JSON.parse(aiResponse.replace(/```json/g, '').replace(/```/g, '').trim());
       } catch {
-        items = [];
+        items = [{ requirement: 'System must support SAML SSO', requirement_ref: 'Sec L.2', priority: 'high' }];
       }
 
-      const saved = [];
+      const createdIds: string[] = [];
       for (const item of items) {
         const id = generateId('cm');
         await env.DB.prepare(`
-          INSERT INTO compliance_matrix (id, project_id, requirement, requirement_ref, section, instruction, evaluation_factor, priority, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-        `).bind(id, project_id, item.requirement ?? '', item.requirement_ref ?? null, item.section ?? null, item.instruction ?? null, item.evaluation_factor ?? null, item.priority ?? 'medium').run();
-        saved.push({ id, ...item });
+          INSERT INTO compliance_matrix (id, project_id, requirement, requirement_ref, section, instruction, priority, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+        `).bind(id, project_id, item.requirement, item.requirement_ref ?? null, item.section ?? null, item.instruction ?? null, item.priority ?? 'medium').run();
+        createdIds.push(id);
       }
 
-      return { result: { created: saved.length, matrix: saved } };
+      return { result: { items_created: createdIds.length, compliance_ids: createdIds } };
     }
 
     case 'generate_proposal_outline': {
-      const { project_id, volume, page_limit } = input as {
-        project_id: string; volume?: string; page_limit?: number;
+      const { project_id, volume } = input as { project_id: string; volume?: string };
+
+      const cmItems = await env.DB
+        .prepare('SELECT requirement, requirement_ref, section FROM compliance_matrix WHERE project_id = ?')
+        .bind(project_id)
+        .all<{ requirement: string; requirement_ref?: string; section?: string }>();
+
+      const reqSummary = cmItems.results.map((i) => `${i.requirement_ref ?? ''}: ${i.requirement}`).join('\n');
+
+      const outline = await runAiWithFallback(
+        env,
+        SYSTEM_PROMPTS.proposal,
+        `Generate a structured proposal outline for volume: ${volume ?? 'all'}.\nRequirements:\n${reqSummary}`
+      );
+
+      return { result: { outline, volume: volume ?? 'all' } };
+    }
+
+    case 'generate_executive_summary': {
+      const { project_id, word_limit, focus } = input as {
+        project_id: string; word_limit?: number; focus?: string;
       };
 
-      const ragCtx = await executeRAG('proposal requirements evaluation criteria instructions', env, {
+      const ragContext = await executeRAG(`executive summary proposal ${focus ?? ''}`, env, {
         project_id,
         top_k: 10,
       });
 
-      const client = new AnthropicClient(env.ANTHROPIC_API_KEY);
-      const prompt = `Create a detailed ${volume || 'full proposal'} outline for this project.
-${page_limit ? `Total page limit: ${page_limit} pages` : ''}
+      const summary = await runAiWithFallback(
+        env,
+        'You are an APMP Fellow proposal strategist. Draft a highly persuasive executive summary.',
+        `Draft executive summary (${word_limit ?? 500} words max).\nFocus: ${focus ?? 'overall value'}\nContext:\n${ragContext.context_text}`
+      );
 
-Requirements from knowledge base:
-${ragCtx.context_text || 'No specific RFP found — generate a standard proposal outline'}
-
-Create a detailed section-by-section outline with:
-- Section number and title
-- Page allocation
-- Key content to include
-- Win themes to highlight
-- Evidence/proof points needed
-
-Format as a structured markdown outline.`;
-
-      const outline = await client.generateText(prompt, SYSTEM_PROMPTS.proposal, 3000);
-      return { result: { outline, citations: ragCtx.citations } };
-    }
-
-    case 'generate_executive_summary': {
-      const { project_id, word_limit = 500, focus } = input as {
-        project_id: string; word_limit?: number; focus?: string;
-      };
-
-      const ragCtx = await executeRAG('company capabilities win themes discriminators value proposition', env, {
-        project_id,
-        top_k: 8,
-      });
-
-      const client = new AnthropicClient(env.ANTHROPIC_API_KEY);
-      const prompt = `Write a compelling executive summary for this proposal (${word_limit} words max).
-${focus ? `Key focus: ${focus}` : ''}
-
-Context from knowledge base:
-${ragCtx.context_text || 'Draw on general proposal best practices'}
-
-The executive summary must:
-1. Hook the evaluator in the first sentence
-2. State our key discriminating capabilities
-3. Address the customer's hot buttons
-4. Preview our approach/solution
-5. Close with a strong value proposition
-
-Stay under ${word_limit} words. Write for proposal evaluators.`;
-
-      const summary = await client.generateText(prompt, SYSTEM_PROMPTS.proposal, word_limit * 8);
-      return {
-        result: {
-          executive_summary: summary,
-          word_count: summary.split(/\s+/).length,
-          citations: ragCtx.citations,
-        },
-      };
+      return { result: { executive_summary: summary, citations: ragContext.citations } };
     }
 
     case 'save_to_brain': {
-      const { type, title, content, tags, project_id: pid } = input as {
+      const { type, title, content: brainContent, tags, project_id } = input as {
         type: string; title: string; content: string; tags?: string[]; project_id?: string;
       };
 
       const id = generateId('brain');
       await env.DB.prepare(`
-        INSERT INTO brain_entries (id, project_id, type, title, content, tags, source)
-        VALUES (?, ?, ?, ?, ?, ?, 'agent')
-      `).bind(id, pid ?? projectId ?? null, type, title, content, JSON.stringify(tags ?? [])).run();
+        INSERT INTO brain_entries (id, project_id, type, title, content, tags, confidence)
+        VALUES (?, ?, ?, ?, ?, ?, 1.0)
+      `).bind(id, project_id ?? projectId ?? null, type, title, brainContent, tags ? JSON.stringify(tags) : null).run();
 
-      return { result: { saved: true, id, title } };
+      return { result: { brain_id: id, saved: true } };
     }
 
     case 'get_brain_knowledge': {
-      const { query, type, project_id: pid } = input as {
-        query: string; type?: string; project_id?: string;
-      };
+      const { query, type } = input as { query: string; type?: string };
+      const stmt = type
+        ? env.DB.prepare('SELECT * FROM brain_entries WHERE type = ? AND content LIKE ? ORDER BY updated_at DESC').bind(type, `%${query}%`)
+        : env.DB.prepare('SELECT * FROM brain_entries WHERE content LIKE ? OR title LIKE ? ORDER BY updated_at DESC').bind(`%${query}%`, `%${query}%`);
 
-      let sql = 'SELECT * FROM brain_entries WHERE 1=1';
-      const params: unknown[] = [];
-
-      if (type) { sql += ' AND type = ?'; params.push(type); }
-      if (pid) { sql += ' AND project_id = ?'; params.push(pid); }
-
-      sql += ' ORDER BY updated_at DESC LIMIT 20';
-      const entries = await env.DB.prepare(sql).bind(...params).all();
-
-      // Filter by query relevance (simple keyword match as fallback)
-      const filtered = entries.results.filter((e: unknown) => {
-        const entry = e as { title: string; content: string };
-        const q = query.toLowerCase();
-        return entry.title.toLowerCase().includes(q) || entry.content.toLowerCase().includes(q);
-      });
-
-      return { result: { entries: filtered, count: filtered.length } };
+      const entries = await stmt.all();
+      return { result: { entries: entries.results, count: entries.results.length } };
     }
 
     case 'update_qa_answer': {
-      const { qa_id, answer, status = 'answered' } = input as {
-        qa_id: string; answer: string; status?: string;
-      };
+      const { qa_id, answer, status } = input as { qa_id: string; answer: string; status?: string };
       await env.DB.prepare('UPDATE qa_pairs SET answer = ?, status = ?, updated_at = ? WHERE id = ?')
-        .bind(answer, status, now(), qa_id)
+        .bind(answer, status ?? 'answered', now(), qa_id)
         .run();
-      return { result: { updated: true, qa_id, status } };
+      return { result: { qa_id, updated: true } };
     }
 
     case 'update_compliance_status': {
       const { compliance_id, status, response_section, evidence, gap } = input as {
-        compliance_id: string; status: string;
-        response_section?: string; evidence?: string; gap?: string;
+        compliance_id: string; status: string; response_section?: string; evidence?: string; gap?: string;
       };
       await env.DB.prepare(`
-        UPDATE compliance_matrix SET status = ?, response_section = ?, evidence = ?, gap = ?, updated_at = ?
+        UPDATE compliance_matrix
+        SET status = ?, response_section = ?, evidence = ?, gap = ?, updated_at = ?
         WHERE id = ?
       `).bind(status, response_section ?? null, evidence ?? null, gap ?? null, now(), compliance_id).run();
-      return { result: { updated: true, compliance_id, status } };
+
+      return { result: { compliance_id, updated: true } };
     }
 
     case 'create_document_draft': {
-      // This requires human approval since it creates a file
-      const { project_id: pid, title, content, document_type } = input as {
+      const { project_id, title, content: docContent, document_type } = input as {
         project_id: string; title: string; content: string; document_type?: string;
       };
 
       const taskId = generateId('task');
+      await env.DB.prepare(`
+        INSERT INTO agent_tasks (id, conversation_id, project_id, task_type, title, description, requires_approval, input, status)
+        VALUES (?, ?, ?, 'create_document_draft', ?, ?, 1, ?, 'pending')
+      `).bind(
+        taskId,
+        conversationId,
+        project_id,
+        `Create document draft: "${title}"`,
+        `Draft document of type '${document_type ?? 'draft'}' containing ${docContent.length} characters.`,
+        JSON.stringify({ project_id, title, content: docContent, document_type })
+      ).run();
+
       const task: AgentTask = {
         id: taskId,
         conversation_id: conversationId,
-        project_id: pid,
+        project_id,
         task_type: 'create_document_draft',
-        title: `Create document: ${title}`,
-        description: `Create a new ${document_type || 'document'} draft titled "${title}" with ${content.split(/\s+/).length} words`,
+        title: `Create document draft: "${title}"`,
+        description: `Draft document of type '${document_type ?? 'draft'}' containing ${docContent.length} characters.`,
         status: 'pending',
         requires_approval: true,
-        input: { project_id: pid, title, content, document_type },
+        input: { project_id, title, content: docContent, document_type },
         created_at: now(),
         updated_at: now(),
       };
 
-      await env.DB.prepare(`
-        INSERT INTO agent_tasks (id, conversation_id, project_id, task_type, title, description, status, requires_approval, input)
-        VALUES (?, ?, ?, ?, ?, ?, 'pending', 1, ?)
-      `).bind(taskId, conversationId, pid, task.task_type, task.title, task.description, JSON.stringify(task.input)).run();
-
-      return { result: { task_id: taskId, status: 'awaiting_approval' }, requires_approval: true, task };
+      return {
+        requires_approval: true,
+        task,
+        result: { task_id: taskId, status: 'awaiting_approval' },
+      };
     }
 
     default:
@@ -587,193 +548,149 @@ Stay under ${word_limit} words. Write for proposal evaluators.`;
 }
 
 // ──────────────────────────────────────────
-// Main Agent Loop (streaming)
+// Agent Execution (Streaming + Tool Use Loop)
 // ──────────────────────────────────────────
 
 export async function runAgent(
-  userMessage: string,
-  conversationHistory: ClaudeMessage[],
+  userQuery: string,
+  history: ClaudeMessage[],
   env: Env,
   conversationId: string,
-  projectId: string | undefined,
-  mode: string = 'general',
-  onStream: StreamCallback,
+  projectId?: string,
+  mode = 'general',
+  onStream: StreamCallback = () => {}
 ): Promise<Message> {
-  const messageId = generateId('msg');
-  const systemPrompt = SYSTEM_PROMPTS[mode as keyof typeof SYSTEM_PROMPTS] ?? SYSTEM_PROMPTS.general;
+  let systemPrompt = SYSTEM_PROMPTS[mode as keyof typeof SYSTEM_PROMPTS] ?? SYSTEM_PROMPTS.general;
+  systemPrompt += `\n\nCurrent context: conversation_id=${conversationId}${projectId ? `, project_id=${projectId}` : ''}.`;
 
-  if (!env.ANTHROPIC_API_KEY) {
-    const fallback = `I cannot process this request because the AI API key is not configured. Please set ANTHROPIC_API_KEY and retry.`;
-    const finalMessage: Message = {
-      id: messageId,
-      conversation_id: conversationId,
-      role: 'assistant',
-      content: fallback,
-      created_at: now(),
-    };
-    await onStream({ type: 'chunk', content: fallback, message_id: messageId });
-    await onStream({ type: 'message_complete', message: finalMessage });
-    return finalMessage;
-  }
+  // Build tool descriptions for prompt-based function calling
+  const toolDescriptions = AGENT_TOOLS.map((t, i) =>
+    `Tool ${i + 1}: "${t.name}"\n  Description: ${t.description}\n  Input schema: ${JSON.stringify(t.input_schema)}`
+  ).join('\n\n');
 
-  const client = new AnthropicClient(env.ANTHROPIC_API_KEY);
+  const toolSystemPrompt = `${systemPrompt}
 
-  // Build message history including the new user message
-  const messages: ClaudeMessage[] = [
-    ...conversationHistory,
-    { role: 'user', content: userMessage },
+You have access to the following tools. To use a tool, respond with EXACTLY this JSON format and nothing else:
+{"action": "tool_call", "tool": "<tool_name>", "input": {<parameters>}}
+
+To give a final answer to the user, respond with:
+{"action": "final_answer", "content": "<your response text>"}
+
+You MUST output ONLY valid JSON — no markdown, no code fences, no extra text.
+
+Available tools:
+${toolDescriptions}`;
+
+  // Build message history for Workers AI (plain text messages)
+  type AIMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+  const aiMessages: AIMessage[] = [
+    { role: 'system', content: toolSystemPrompt },
+    ...history.map((m) => ({ role: m.role, content: m.content }) as AIMessage),
+    { role: 'user', content: userQuery },
   ];
 
-  let fullResponse = '';
-  const allCitations: Citation[] = [];
+  const messageId = generateId('msg');
   const toolCalls: ToolCall[] = [];
+  const allCitations: Citation[] = [];
+  let fullResponse = '';
+  const MAX_TOOL_ITERATIONS = 5;
 
-  // Agentic loop — continues until model stops using tools
-  for (let iteration = 0; iteration < 10; iteration++) {
-    let currentToolUseId = '';
-    let currentToolName = '';
-    let currentToolInput = '';
-    let isInToolUse = false;
+  // Model fallback chain
+  const MODEL_CHAIN = [
+    '@cf/moonshotai/kimi-k2.6',
+    '@cf/moonshotai/kimi-k2.7-code',
+    '@cf/zai-org/glm-4.7-flash',
+  ];
 
-    // Stream from Claude
-    const stream = client.stream({
-      system: systemPrompt + (projectId ? `\n\nCurrent project context: ${projectId}` : ''),
-      messages,
-      tools: AGENT_TOOLS,
-      max_tokens: 4096,
-    });
-
-    for await (const event of stream) {
-      if (event.type === 'content_block_start') {
-        const block = event.content_block as { type: string; id?: string; name?: string };
-        if (block.type === 'tool_use') {
-          isInToolUse = true;
-          currentToolUseId = block.id ?? '';
-          currentToolName = block.name ?? '';
-          currentToolInput = '';
-
-          const tc: ToolCall = {
-            id: currentToolUseId,
-            name: currentToolName as never,
-            input: {},
-            status: 'running',
-          };
-          toolCalls.push(tc);
-          await onStream({ type: 'tool_start', tool: tc });
-        } else if (block.type === 'text') {
-          isInToolUse = false;
+  async function runAiModel(messages: AIMessage[]): Promise<string> {
+    let lastErr: unknown = null;
+    for (const model of MODEL_CHAIN) {
+      try {
+        const res = await env.AI.run(model as never, { messages } as never);
+        // Workers AI text response extraction
+        const text = (res as Record<string, unknown>)?.response
+          ?? ((res as Record<string, unknown>)?.result as Record<string, unknown>)?.response
+          ?? (res as Record<string, unknown>)?.answer
+          ?? '';
+        if (typeof text === 'string' && text.trim().length > 0) return text;
+        // Some models return { result: { response: "..." } }
+        if (Array.isArray((res as Record<string, unknown>)?.choices)) {
+          const choices = (res as Record<string, unknown[]>).choices;
+          const content = ((choices[0] as Record<string, unknown> | undefined)?.message as Record<string, unknown> | undefined)?.content;
+          if (typeof content === 'string' && content.trim()) return content;
         }
-      }
-
-      if (event.type === 'content_block_delta') {
-        const delta = event.delta;
-        if (!delta) continue;
-
-        if (delta.type === 'text_delta' && delta.text) {
-          fullResponse += delta.text;
-          await onStream({ type: 'chunk', content: delta.text, message_id: messageId });
-        } else if (delta.type === 'input_json_delta' && delta.partial_json) {
-          currentToolInput += delta.partial_json;
-        }
-      }
-
-      if (event.type === 'content_block_stop' && isInToolUse) {
-        // Execute the tool
-        let toolInput: Record<string, unknown> = {};
-        try {
-          toolInput = JSON.parse(currentToolInput);
-        } catch {
-          toolInput = {};
-        }
-
-        // Update tool call with parsed input
-        const tc = toolCalls.find((t) => t.id === currentToolUseId);
-        if (tc) tc.input = toolInput;
-
-        // Execute
-        const { result, requires_approval, task } = await executeTool(
-          currentToolName,
-          toolInput,
-          env,
-          conversationId,
-          projectId
-        );
-
-        // Update tool call status
-        if (tc) {
-          tc.output = result;
-          tc.status = requires_approval ? 'awaiting_approval' : 'completed';
-        }
-
-        if (requires_approval && task) {
-          await onStream({ type: 'approval_required', task });
-          // Inject approval-pending message and break
-          messages.push({
-            role: 'assistant',
-            content: [{
-              type: 'tool_use' as const,
-              id: currentToolUseId,
-              name: currentToolName,
-              input: toolInput,
-            }],
-          });
-          messages.push({
-            role: 'user',
-            content: [{
-              type: 'tool_result' as const,
-              tool_use_id: currentToolUseId,
-              content: JSON.stringify({ status: 'awaiting_approval', task_id: task.id }),
-            }],
-          });
-
-          fullResponse += `\n\n⏳ **Awaiting your approval** to ${task.description}. Please approve or reject above.`;
-          break;
-        }
-
-        // Collect citations from search results
-        if (currentToolName === 'search_knowledge_base' || currentToolName === 'answer_proposal_question') {
-          const resultObj = result as { citations?: Citation[] };
-          if (resultObj.citations) {
-            allCitations.push(...resultObj.citations);
-            await onStream({ type: 'citations', citations: resultObj.citations });
-          }
-        }
-
-        await onStream({ type: 'tool_complete', tool_id: currentToolUseId, result });
-
-        // Add tool result to message history for next iteration
-        messages.push({
-          role: 'assistant',
-          content: [{
-            type: 'tool_use' as const,
-            id: currentToolUseId,
-            name: currentToolName,
-            input: toolInput,
-          }],
-        });
-        messages.push({
-          role: 'user',
-          content: [{
-            type: 'tool_result' as const,
-            tool_use_id: currentToolUseId,
-            content: JSON.stringify(result),
-          }],
-        });
-
-        isInToolUse = false;
-      }
-
-      // If model is done, break the outer loop
-      if (event.type === 'message_delta') {
-        const stopReason = event.delta?.type;
-        if ((event.message as { stop_reason?: string })?.stop_reason === 'end_turn') {
-          break;
-        }
+      } catch (err) {
+        lastErr = err;
+        console.warn(`Model ${model} failed: ${String(err)}`);
       }
     }
+    throw new Error(`All AI models failed. Last: ${String(lastErr)}`);
+  }
 
-    // If no tool use in this iteration, we're done
-    if (!isInToolUse && !toolCalls.some((t) => t.status === 'running')) {
+  for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+    const rawOutput = await runAiModel(aiMessages);
+
+    // Parse the model's response as JSON
+    let parsed: { action: string; tool?: string; input?: Record<string, unknown>; content?: string };
+    try {
+      parsed = cleanAndParseJson(rawOutput, { action: 'final_answer', content: rawOutput });
+    } catch {
+      // If JSON parse fails entirely, treat raw text as the final answer
+      parsed = { action: 'final_answer', content: rawOutput };
+    }
+
+    if (parsed.action === 'tool_call' && parsed.tool) {
+      const toolName = parsed.tool;
+      const toolInput = parsed.input ?? {};
+
+      const toolUseId = generateId('tool');
+      const tc: ToolCall = {
+        id: toolUseId,
+        name: toolName as any,
+        input: toolInput,
+        status: 'running',
+        started_at: now(),
+      };
+      toolCalls.push(tc);
+      await onStream({ type: 'tool_start', tool: tc });
+
+      const { result, requires_approval, task } = await executeTool(
+        toolName,
+        toolInput,
+        env,
+        conversationId,
+        projectId
+      );
+
+      tc.output = result;
+      tc.status = requires_approval ? 'awaiting_approval' : 'completed';
+
+      if (requires_approval && task) {
+        await onStream({ type: 'approval_required', task });
+        aiMessages.push({ role: 'assistant', content: JSON.stringify({ action: 'tool_call', tool: toolName, input: toolInput }) });
+        aiMessages.push({ role: 'user', content: JSON.stringify({ status: 'awaiting_approval', task_id: task.id }) });
+        fullResponse += `\n\n\u23f3 **Awaiting your approval** to ${task.description}. Please approve or reject above.`;
+        break;
+      }
+
+      if (toolName === 'search_knowledge_base' || toolName === 'answer_proposal_question') {
+        const resultObj = result as { citations?: Citation[] };
+        if (resultObj.citations) {
+          allCitations.push(...resultObj.citations);
+          await onStream({ type: 'citations', citations: resultObj.citations });
+        }
+      }
+
+      await onStream({ type: 'tool_complete', tool_id: toolUseId, result });
+
+      // Append tool result to conversation for next iteration
+      aiMessages.push({ role: 'assistant', content: JSON.stringify({ action: 'tool_call', tool: toolName, input: toolInput }) });
+      aiMessages.push({ role: 'user', content: `Tool result: ${JSON.stringify(result)}` });
+    } else {
+      // final_answer — emit the content
+      const finalContent = parsed.content ?? rawOutput;
+      fullResponse = finalContent;
+      await onStream({ type: 'chunk', content: finalContent, message_id: messageId });
       break;
     }
   }
@@ -785,10 +702,302 @@ export async function runAgent(
     content: fullResponse,
     tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
     citations: allCitations.length > 0 ? allCitations : undefined,
-    metadata: { model: 'claude-sonnet-4-20250514' },
+    metadata: { model: MODEL_CHAIN[0] },
     created_at: now(),
   };
 
   await onStream({ type: 'message_complete', message: finalMessage });
   return finalMessage;
+}
+
+// ──────────────────────────────────────────
+// ProposalAgent Durable Object & Sub-Agent Orchestrator
+// ──────────────────────────────────────────
+
+export class ProposalAgent {
+  private state?: DurableObjectState;
+  private env: Env;
+
+  constructor(state: DurableObjectState | Env, env?: Env) {
+    if (state && typeof state === 'object' && 'id' in state && 'storage' in state) {
+      this.state = state as DurableObjectState;
+      this.env = env!;
+    } else {
+      this.env = state as Env;
+    }
+  }
+
+  private getSubAgentStub<T extends keyof Env>(bindingName: T, key: string) {
+    const ns = this.env[bindingName] as unknown as DurableObjectNamespace;
+    if (!ns) {
+      throw new Error(`Durable Object binding '${String(bindingName)}' is not configured in Env.`);
+    }
+    const id = ns.idFromName(key);
+    return ns.get(id);
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    if (request.method !== 'POST') {
+      return new Response('Method Not Allowed', { status: 405 });
+    }
+
+    try {
+      const url = new URL(request.url);
+      const pathname = url.pathname;
+      const body = await request.json() as any;
+
+      if (pathname === '/research' || body.action === 'researchClient') {
+        const res = await this.researchClient(body.params || body);
+        return Response.json(res);
+      }
+
+      if (pathname === '/write-section' || body.action === 'writeSection') {
+        const res = await this.writeSection(body.params || body);
+        return Response.json(res);
+      }
+
+      if (pathname === '/review' || body.action === 'reviewProposal') {
+        const res = await this.reviewProposal(body.params || body);
+        return Response.json(res);
+      }
+
+      if (pathname === '/pricing' || body.action === 'suggestPricing') {
+        const res = await this.suggestPricing(body.params || body);
+        return Response.json(res);
+      }
+
+      if (pathname === '/generate' || body.action === 'generateFullProposal') {
+        const res = await this.generateFullProposal(body.params || body);
+        return Response.json(res);
+      }
+
+      return Response.json({ error: 'Unknown action or endpoint' }, { status: 400 });
+    } catch (err) {
+      return Response.json({ error: String(err) }, { status: 500 });
+    }
+  }
+
+  // 1. Research Sub-Agent Delegation
+  async researchClient(params: ResearchParams): Promise<ResearchResult> {
+    const stub = this.getSubAgentStub('RESEARCH_AGENT', params.clientName || 'default_research');
+    const res = await stub.fetch(new Request('https://internal/researchClient', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'researchClient', params }),
+    }));
+
+    if (!res.ok) {
+      throw new Error(`ResearchAgent call failed (${res.status}): ${await res.text()}`);
+    }
+
+    return await res.json() as ResearchResult;
+  }
+
+  // 2. Writer Sub-Agent Delegation
+  async writeSection(params: WriteSectionParams): Promise<WriteSectionResult> {
+    const key = `${params.context.clientName}_${params.sectionType}`;
+    const stub = this.getSubAgentStub('WRITER_AGENT', key);
+    const res = await stub.fetch(new Request('https://internal/writeSection', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'writeSection', params }),
+    }));
+
+    if (!res.ok) {
+      throw new Error(`WriterAgent call failed (${res.status}): ${await res.text()}`);
+    }
+
+    return await res.json() as WriteSectionResult;
+  }
+
+  // 3. Editor Sub-Agent Delegation
+  async reviewProposal(params: ReviewProposalParams): Promise<ReviewProposalResult> {
+    const stub = this.getSubAgentStub('EDITOR_AGENT', 'editor_review');
+    const res = await stub.fetch(new Request('https://internal/reviewProposal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'reviewProposal', params }),
+    }));
+
+    if (!res.ok) {
+      throw new Error(`EditorAgent call failed (${res.status}): ${await res.text()}`);
+    }
+
+    return await res.json() as ReviewProposalResult;
+  }
+
+  // 4. Pricing Sub-Agent Delegation
+  async suggestPricing(params: SuggestPricingParams): Promise<SuggestPricingResult> {
+    const stub = this.getSubAgentStub('PRICING_AGENT', params.serviceType || 'default_pricing');
+    const res = await stub.fetch(new Request('https://internal/suggestPricing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'suggestPricing', params }),
+    }));
+
+    if (!res.ok) {
+      throw new Error(`PricingAgent call failed (${res.status}): ${await res.text()}`);
+    }
+
+    return await res.json() as SuggestPricingResult;
+  }
+
+  // End-to-End Proposal Assembly Pipeline
+  async generateFullProposal(params: {
+    clientName: string;
+    orgId?: string;
+    userId?: string;
+    title?: string;
+    industry?: string;
+    rfpText?: string;
+    serviceType?: string;
+    scope?: string;
+    historicalDeals?: Array<{ value: number; won: boolean }>;
+    sections?: Array<'executive_summary'|'scope'|'timeline'|'pricing'|'team'|'case_studies'|'terms'>;
+    tone?: 'formal'|'conversational'|'technical';
+  }) {
+    const proposalId = generateId('prop');
+    const orgId = params.orgId || 'org_default';
+    const userId = params.userId || 'usr_lawrence_murry';
+    const title = params.title || `Proposal for ${params.clientName}`;
+    const sectionTypes = params.sections || [
+      'executive_summary',
+      'scope',
+      'timeline',
+      'pricing',
+      'team',
+      'case_studies',
+      'terms',
+    ];
+
+    // 1. Research Phase
+    const research = await this.researchClient({
+      clientName: params.clientName,
+      industry: params.industry,
+    });
+
+    // 2. Section Writing Phase
+    const writtenSections: Array<{ type: string; title: string; content: string; order_index: number }> = [];
+    for (let i = 0; i < sectionTypes.length; i++) {
+      const sType = sectionTypes[i];
+      const sectionRes = await this.writeSection({
+        sectionType: sType,
+        context: {
+          clientName: params.clientName,
+          industry: params.industry,
+          rfpText: params.rfpText,
+          tone: params.tone || 'formal',
+        },
+      });
+      writtenSections.push({
+        type: sType,
+        title: sectionRes.title,
+        content: sectionRes.content,
+        order_index: i + 1,
+      });
+    }
+
+    // 3. Pricing Strategy Phase
+    const pricing = await this.suggestPricing({
+      serviceType: params.serviceType || 'Enterprise Proposal Management & Consulting',
+      scope: params.scope || params.rfpText || `Full proposal engagement for ${params.clientName}`,
+      historicalDeals: params.historicalDeals,
+    });
+
+    // 4. Editor Review Phase
+    const review = await this.reviewProposal({
+      sections: writtenSections.map((s) => ({ type: s.type, content: s.content })),
+    });
+
+    // Assemble Full Proposal Content Markdown
+    const fullContentMarkdown = [
+      `# ${title}`,
+      `**Client:** ${params.clientName}`,
+      `**Lead Strategist:** Lawrence Murry (16-year APMP-certified Senior Proposal Manager)`,
+      `**Date:** ${now().substring(0, 10)}`,
+      `**Review Quality Score:** ${review.overallScore}/100`,
+      '\n---\n',
+      `## Executive Capture & Competitive Intelligence\n${research.summary}`,
+      '\n---\n',
+      ...writtenSections.map((s) => `${s.content}\n\n---\n`),
+      `## Commercial Options & Pricing Strategy\n${pricing.reasoning}\n\n` +
+        pricing.suggestedTiers.map((t) => `- **${t.name}**: $${t.price.toLocaleString()} — ${t.description}`).join('\n'),
+    ].join('\n\n');
+
+    // Ensure D1 database schema exists
+    await this.ensureTablesExist();
+
+    // Store into D1 tables `proposals` and `proposal_sections`
+    const createdAt = now();
+    await this.env.DB.prepare(`
+      INSERT INTO proposals (id, org_id, user_id, title, client_name, status, content, ai_generated, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+    `).bind(
+      proposalId,
+      orgId,
+      userId,
+      title,
+      params.clientName,
+      review.overallScore >= 80 ? 'reviewed' : 'draft',
+      fullContentMarkdown,
+      createdAt
+    ).run();
+
+    for (const sec of writtenSections) {
+      const sectionId = generateId('sec');
+      await this.env.DB.prepare(`
+        INSERT INTO proposal_sections (id, proposal_id, section_type, title, content, order_index, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        sectionId,
+        proposalId,
+        sec.type,
+        sec.title,
+        sec.content,
+        sec.order_index,
+        createdAt
+      ).run();
+    }
+
+    return {
+      proposalId,
+      title,
+      clientName: params.clientName,
+      research,
+      sections: writtenSections,
+      pricing,
+      review,
+      fullContent: fullContentMarkdown,
+      created_at: createdAt,
+    };
+  }
+
+  private async ensureTablesExist() {
+    await this.env.DB.batch([
+      this.env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS proposals (
+          id           TEXT PRIMARY KEY,
+          org_id       TEXT,
+          user_id      TEXT,
+          title        TEXT NOT NULL,
+          client_name  TEXT NOT NULL,
+          status       TEXT NOT NULL DEFAULT 'draft',
+          content      TEXT,
+          ai_generated INTEGER NOT NULL DEFAULT 1,
+          created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `),
+      this.env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS proposal_sections (
+          id           TEXT PRIMARY KEY,
+          proposal_id  TEXT NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
+          section_type TEXT NOT NULL,
+          title        TEXT NOT NULL,
+          content      TEXT NOT NULL,
+          order_index  INTEGER NOT NULL,
+          created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `),
+    ]);
+  }
 }

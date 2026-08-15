@@ -3,6 +3,18 @@ main = "src/index.ts"
 compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat"]
 
+# ──────────────────────────────────────────
+# Durable Object migrations (required on first deploy)
+# ──────────────────────────────────────────
+[[migrations]]
+tag = "v1"
+new_classes = ["ConversationDurableObject", "ProjectDurableObject"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["ProposalAgent", "ResearchAgent", "WriterAgent", "EditorAgent", "PricingAgent"]
+
+[env.production]
 [env.production.vars]
   APP_NAME = "murry-ai-v2"
   ENVIRONMENT = "production"
@@ -15,18 +27,49 @@ compatibility_flags = ["nodejs_compat"]
   binding = "ASSETS"
 
 # ──────────────────────────────────────────
+# Workers AI (embeddings via src/lib/rag.ts)
+# ──────────────────────────────────────────
+[env.production.ai]
+binding = "AI"
+
+# ──────────────────────────────────────────
 # Durable Objects (persistent stateful sessions)
 # ──────────────────────────────────────────
-[[durable_objects.bindings]]
+[[env.production.durable_objects.bindings]]
 name = "CONVERSATION_DO"
 class_name = "ConversationDurableObject"
 
-[[durable_objects.bindings]]
+[[env.production.durable_objects.bindings]]
 name = "PROJECT_DO"
 class_name = "ProjectDurableObject"
 
+[[env.production.durable_objects.bindings]]
+name = "PROPOSAL_AGENT"
+class_name = "ProposalAgent"
+
+[[env.production.durable_objects.bindings]]
+name = "RESEARCH_AGENT"
+class_name = "ResearchAgent"
+
+[[env.production.durable_objects.bindings]]
+name = "WRITER_AGENT"
+class_name = "WriterAgent"
+
+[[env.production.durable_objects.bindings]]
+name = "EDITOR_AGENT"
+class_name = "EditorAgent"
+
+[[env.production.durable_objects.bindings]]
+name = "PRICING_AGENT"
+class_name = "PricingAgent"
+
 # ──────────────────────────────────────────
 # D1 Database (relational metadata store)
+# "hello-ai" was recreated by Lawrence on 2026-08-15 with a new id
+# after the original was accidentally deleted. Confirmed real via
+# `wrangler d1 info hello-ai`.
+# IMPORTANT: bindings must live under [env.production.*] — Wrangler
+# does NOT inherit top-level array bindings into named environments.
 # ──────────────────────────────────────────
 [[env.production.d1_databases]]
 binding = "DB"
@@ -35,34 +78,41 @@ database_id = "6de4b284-7421-423e-89ef-d493042a8a10"
 
 # ──────────────────────────────────────────
 # R2 Bucket (document storage)
-# ──────────────────────────────────────────
-[[r2_buckets]]
-binding = "R2"
-bucket_name = "highstreet-it"
+# TEMPORARILY DISABLED: the CLOUDFLARE_API_TOKEN in use returns
+# "Authentication error [code: 10000]" on ALL R2 endpoints (list + bind),
+# even direct curl calls to the Cloudflare API bypassing Wrangler.
+# This is a token permission scope issue, not a config bug — the token
+# needs "Workers R2 Storage" (Edit) added in the CF dashboard.
+# Binding name is corrected to DOCUMENTS_BUCKET (was "R2") to match
+# src/types.ts and src/api/handlers.ts — re-enable once the token is fixed:
+#
+# [[env.production.r2_buckets]]
+# binding = "DOCUMENTS_BUCKET"
+# bucket_name = "highstreet-it"
 
 # ──────────────────────────────────────────
 # Vectorize (semantic vector search)
 # ──────────────────────────────────────────
-[[vectorize]]
+[[env.production.vectorize]]
 binding = "VECTORIZE"
 index_name = "vector-index"
 
 # ──────────────────────────────────────────
 # KV Namespace (caching & session state)
 # ──────────────────────────────────────────
-[[kv_namespaces]]
+[[env.production.kv_namespaces]]
 binding = "KV_CACHE"
 id = "ba2abda5a6f5414a8fcb1de38bff9ac1"
 
 # ──────────────────────────────────────────
 # Workflows (background processing pipelines)
 # ──────────────────────────────────────────
-[[workflows]]
+[[env.production.workflows]]
 binding = "DOCUMENT_INGESTION"
 class_name = "DocumentIngestionWorkflow"
 name = "DocumentIngestionWorkflow"
 
-[[workflows]]
+[[env.production.workflows]]
 binding = "PROPOSAL_ANALYSIS"
 class_name = "ProposalAnalysisWorkflow"
 name = "ProposalAnalysisWorkflow"

@@ -434,6 +434,22 @@ export async function handleBrain(request: Request, env: Env): Promise<Response>
     return apiJson({ success: true, data: entry }, 201);
   }
 
+  if (request.method === 'PATCH' && entryId) {
+    const body = await request.json() as Partial<BrainEntry>;
+    const updates: string[] = [];
+    const params: unknown[] = [];
+    if (body.title !== undefined) { updates.push('title = ?'); params.push(body.title); }
+    if (body.content !== undefined) { updates.push('content = ?'); params.push(body.content); }
+    if (body.type !== undefined) { updates.push('type = ?'); params.push(body.type); }
+    if (body.tags !== undefined) { updates.push('tags = ?'); params.push(JSON.stringify(body.tags)); }
+    if (updates.length === 0) return apiError('No fields to update', 400);
+    updates.push("updated_at = datetime('now')");
+    params.push(entryId);
+    await env.DB.prepare(`UPDATE brain_entries SET ${updates.join(', ')} WHERE id = ?`).bind(...params).run();
+    const updated = await env.DB.prepare('SELECT * FROM brain_entries WHERE id = ?').bind(entryId).first<BrainEntry>();
+    return apiJson({ success: true, data: updated });
+  }
+
   if (request.method === 'DELETE' && entryId) {
     await env.DB.prepare('DELETE FROM brain_entries WHERE id = ?').bind(entryId).run();
     return apiJson({ success: true, data: { deleted: true, id: entryId } });
@@ -441,6 +457,108 @@ export async function handleBrain(request: Request, env: Env): Promise<Response>
 
   return apiError('Method not allowed', 405);
 }
+
+// ──────────────────────────────────────────
+// BRAIN AUTO-EXTRACT API
+// ──────────────────────────────────────────
+
+export async function handleBrainExtract(request: Request, env: Env): Promise<Response> {
+  const body = await request.json() as { conversation_id?: string; project_id?: string };
+  if (!body.conversation_id) return apiError('conversation_id is required', 400);
+
+  const msgs = await env.DB.prepare(
+    `SELECT role, content FROM messages WHERE conversation_id = ? AND role IN ('user','assistant') ORDER BY created_at DESC LIMIT 20`
+  ).bind(body.conversation_id).all<{ role: string; content: string }>();
+
+  if (msgs.results.length === 0) return apiJson({ success: true, data: { extracted: [] } });
+
+  const conversationText = msgs.results.reverse().map((m) => `${m.role}: ${m.content}`).join('\n\n');
+
+  const systemPrompt = `You are a knowledge extraction assistant. Analyze the conversation and extract 1-5 durable facts, preferences, processes, contacts, or insights worth remembering long-term. Do NOT extract transient task chatter or temporary context. Return a JSON array of objects with fields: type (one of: fact, preference, process, contact, insight), title (short label), content (the actual knowledge). Return ONLY valid JSON.`;
+
+  const userPrompt = `Extract durable knowledge from this conversation:\n\n${conversationText}`;
+
+  const { runAiWithFallback, cleanAndParseJson } = await import('../agents/utils');
+  const aiResponse = await runAiWithFallback(env, systemPrompt, userPrompt);
+  const extracted = cleanAndParseJson<Array<{ type: string; title: string; content: string }>>(aiResponse, []);
+
+  const inserted: BrainEntry[] = [];
+  for (const item of extracted) {
+    if (!item.type || !item.title || !item.content) continue;
+    const id = generateId('brain');
+    await env.DB.prepare(`
+      INSERT INTO brain_entries (id, project_id, type, title, content, tags, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).bind(id, body.project_id ?? null, item.type, item.title, item.content, '[]', 'auto_extracted_from_conversation').run();
+    const entry = await env.DB.prepare('SELECT * FROM brain_entries WHERE id = ?').bind(id).first<BrainEntry>();
+    if (entry) inserted.push(entry);
+  }
+
+  return apiJson({ success: true, data: { extracted: inserted } });
+}
+
+// ──────────────────────────────────────────
+// PROJECT SETTINGS API
+// ──────────────────────────────────────────
+
+export async function handleSettings(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+
+  if (request.method === 'GET') {
+    const projectId = url.searchParams.get('project_id');
+    if (!projectId) return apiError('project_id is required', 400);
+
+    const row = await env.DB.prepare('SELECT * FROM project_settings WHERE project_id = ?').bind(projectId).first();
+    if (row) return apiJson({ success: true, data: row });
+
+    // Return defaults if no row exists yet
+    return apiJson({ success: true, data: {
+      project_id: projectId,
+      proposal_template: 'Standard',
+      default_answer_style: 'formal',
+      quote_format: 'bullets',
+      ai_model: '@cf/moonshotai/kimi-k2.6',
+      ai_autonomy: 'assisted',
+    }});
+  }
+
+  if (request.method === 'POST' || request.method === 'PUT') {
+    const body = await request.json() as {
+      project_id: string;
+      proposal_template?: string;
+      default_answer_style?: string;
+      quote_format?: string;
+      ai_model?: string;
+      ai_autonomy?: string;
+    };
+    if (!body.project_id) return apiError('project_id is required', 400);
+
+    await env.DB.prepare(`
+      INSERT INTO project_settings (project_id, proposal_template, default_answer_style, quote_format, ai_model, ai_autonomy, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(project_id) DO UPDATE SET
+        proposal_template = COALESCE(excluded.proposal_template, project_settings.proposal_template),
+        default_answer_style = COALESCE(excluded.default_answer_style, project_settings.default_answer_style),
+        quote_format = COALESCE(excluded.quote_format, project_settings.quote_format),
+        ai_model = COALESCE(excluded.ai_model, project_settings.ai_model),
+        ai_autonomy = COALESCE(excluded.ai_autonomy, project_settings.ai_autonomy),
+        updated_at = datetime('now')
+    `).bind(
+      body.project_id,
+      body.proposal_template ?? 'Standard',
+      body.default_answer_style ?? 'formal',
+      body.quote_format ?? 'bullets',
+      body.ai_model ?? '@cf/moonshotai/kimi-k2.6',
+      body.ai_autonomy ?? 'assisted'
+    ).run();
+
+    const row = await env.DB.prepare('SELECT * FROM project_settings WHERE project_id = ?').bind(body.project_id).first();
+    return apiJson({ success: true, data: row });
+  }
+
+  return apiError('Method not allowed', 405);
+}
+
 
 // ──────────────────────────────────────────
 // WORKFLOW STATUS API
