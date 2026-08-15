@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en" class="light">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
@@ -49,39 +49,55 @@ tailwind.config = {
 </script>
 <style>
   :root {
-    --bg: 220 13% 9%;
-    --fg: 220 15% 92%;
+    /* Modern dark — layered with visible depth, not flat black */
+    --bg: 222 20% 11%;
+    --fg: 210 22% 94%;
     --primary: 199 89% 52%;
-    --secondary: 220 10% 16%;
-    --accent: 271 76% 63%;
-    --muted: 220 10% 40%;
-    --border: 220 10% 18%;
-    --card: 220 12% 11%;
-    --sidebar: 220 14% 7%;
-    --success: 142 70% 45%;
-    --warning: 38 92% 50%;
-    --danger: 0 72% 51%;
+    --secondary: 220 16% 18%;
+    --accent: 271 76% 66%;
+    --muted: 220 12% 60%;
+    --border: 220 14% 22%;
+    --card: 220 18% 15%;
+    --sidebar: 222 20% 9%;
+    --success: 142 70% 50%;
+    --warning: 38 92% 55%;
+    --danger: 0 72% 55%;
+    --shadow: 0 4px 24px hsl(222 20% 4% / 0.5);
+    --shadow-sm: 0 2px 8px hsl(222 20% 4% / 0.3);
   }
   .light {
-    --bg: 220 20% 97%;
-    --fg: 220 15% 12%;
-    --primary: 199 89% 42%;
-    --secondary: 220 15% 91%;
-    --accent: 271 76% 55%;
-    --muted: 220 10% 55%;
-    --border: 220 15% 84%;
+    --bg: 220 25% 97%;
+    --fg: 222 22% 14%;
+    --primary: 199 89% 44%;
+    --secondary: 220 18% 92%;
+    --accent: 271 70% 55%;
+    --muted: 220 12% 48%;
+    --border: 220 16% 86%;
     --card: 0 0% 100%;
-    --sidebar: 220 20% 94%;
+    --sidebar: 220 24% 95%;
+    --success: 142 70% 42%;
+    --warning: 38 92% 48%;
+    --danger: 0 72% 50%;
+    --shadow: 0 4px 24px hsl(220 20% 80% / 0.25);
+    --shadow-sm: 0 2px 8px hsl(220 20% 80% / 0.15);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body, #root { height: 100%; overflow: hidden; }
-  body { font-family: 'Syne', system-ui, sans-serif; background: hsl(var(--bg)); color: hsl(var(--fg)); }
+  #root { background: hsl(var(--bg)); }
+  body { 
+    font-family: 'Syne', system-ui, sans-serif; 
+    background: hsl(var(--bg)); 
+    color: hsl(var(--fg));
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
 
   /* Scrollbars */
-  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 99px; }
-  ::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted)); }
+  ::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted) / 0.8); }
 
   /* Markdown rendering */
   .prose h1 { font-size: 1.4rem; font-weight: 700; margin: 1.2rem 0 0.6rem; }
@@ -91,7 +107,7 @@ tailwind.config = {
   .prose ul, .prose ol { margin: 0.5rem 0 0.5rem 1.4rem; }
   .prose li { margin: 0.2rem 0; line-height: 1.65; }
   .prose code { font-family: 'JetBrains Mono', monospace; font-size: 0.82em; background: hsl(var(--secondary)); padding: 0.15em 0.4em; border-radius: 4px; }
-  .prose pre { background: hsl(220 15% 7%); border: 1px solid hsl(var(--border)); border-radius: 8px; padding: 1rem; overflow-x: auto; margin: 0.8rem 0; }
+  .prose pre { background: hsl(220 18% 13%); border: 1px solid hsl(var(--border)); border-radius: 8px; padding: 1rem; overflow-x: auto; margin: 0.8rem 0; }
   .prose pre code { background: none; padding: 0; font-size: 0.83em; }
   .prose blockquote { border-left: 3px solid hsl(var(--primary)); padding-left: 1rem; color: hsl(var(--muted)); margin: 0.8rem 0; font-style: italic; }
   .prose table { width: 100%; border-collapse: collapse; margin: 0.8rem 0; font-size: 0.9em; }
@@ -119,7 +135,10 @@ tailwind.config = {
   .badge-processing { background: hsl(var(--primary) / 0.12); color: hsl(var(--primary)); border: 1px solid hsl(var(--primary) / 0.3); }
 
   /* Glow effect on primary elements */
-  .glow-primary { box-shadow: 0 0 20px hsl(var(--primary) / 0.25); }
+  .glow-primary { box-shadow: 0 0 20px hsl(var(--primary) / 0.3), 0 2px 8px hsl(var(--primary) / 0.15); }
+  .card-elevated { box-shadow: var(--shadow); }
+  .card-subtle { box-shadow: var(--shadow-sm); }
+  .transition-smooth { transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1); }
 
   /* Upload drop zone */
   .drop-zone { border: 2px dashed hsl(var(--border)); border-radius: 12px; transition: all 0.2s; }
@@ -309,14 +328,14 @@ function useChat(conversationId, projectId) {
 
 // Button
 function Btn({ children, onClick, variant = 'default', size = 'md', className = '', disabled, type = 'button', title }) {
-  const base = 'inline-flex items-center justify-center gap-2 font-medium rounded transition-all duration-150 cursor-pointer disabled:opacity-40 disabled:pointer-events-none';
+  const base = 'inline-flex items-center justify-center gap-2 font-medium rounded-lg transition-all duration-150 cursor-pointer disabled:opacity-40 disabled:pointer-events-none';
   const variants = {
-    default: 'bg-[hsl(var(--secondary))] text-[hsl(var(--fg))] hover:bg-[hsl(var(--border))]',
-    primary: 'bg-[hsl(var(--primary))] text-black hover:brightness-110 glow-primary',
+    default: 'bg-[hsl(var(--secondary))] text-[hsl(var(--fg))] hover:bg-[hsl(var(--border))] border border-[hsl(var(--border))] border-transparent',
+    primary: 'bg-[hsl(var(--primary))] text-white hover:brightness-110 glow-primary font-semibold',
     ghost: 'hover:bg-[hsl(var(--secondary))] text-[hsl(var(--fg))]',
-    danger: 'bg-[hsl(0_72%_51%/0.15)] text-[hsl(0_72%_51%)] border border-[hsl(0_72%_51%/0.3)] hover:bg-[hsl(0_72%_51%/0.25)]',
-    success: 'bg-[hsl(142_70%_45%/0.15)] text-[hsl(142_70%_45%)] border border-[hsl(142_70%_45%/0.3)] hover:bg-[hsl(142_70%_45%/0.25)]',
-    outline: 'border border-[hsl(var(--border))] hover:bg-[hsl(var(--secondary))]',
+    danger: 'bg-[hsl(0_72%_51%/0.12)] text-[hsl(0_72%_55%)] border border-[hsl(0_72%_51%/0.3)] hover:bg-[hsl(0_72%_51%/0.2)]',
+    success: 'bg-[hsl(142_70%_45%/0.12)] text-[hsl(142_70%_50%)] border border-[hsl(142_70%_45%/0.3)] hover:bg-[hsl(142_70%_45%/0.2)]',
+    outline: 'border border-[hsl(var(--border))] hover:bg-[hsl(var(--secondary))] hover:border-[hsl(var(--muted)/0.4)]',
   };
   const sizes = { sm: 'px-2.5 py-1 text-xs', md: 'px-3.5 py-2 text-sm', lg: 'px-5 py-2.5 text-base', icon: 'p-2' };
   return h('button', { type, onClick, className: `${base} ${variants[variant]} ${sizes[size]} ${className}`, disabled, title }, children);
@@ -941,7 +960,7 @@ function BrainPanel({ projectId, conversationId }) {
     h('div', { className: 'flex-1 overflow-y-auto p-3 space-y-2' },
       loading ? [1,2,3].map(i => h('div', { key: i, className: 'shimmer h-16 rounded-xl' })) :
       entries.length === 0 ? h('div', { className: 'text-center py-12 text-[hsl(var(--muted))]' }, 'No brain entries yet.') :
-      filtered.map(entry => h('div', { key: entry.id, className: 'border border-[hsl(var(--border))] rounded-xl p-3 bg-[hsl(var(--card))]' },
+      filtered.map(entry => h('div', { key: entry.id, className: 'border border-[hsl(var(--border))] rounded-xl p-3 bg-[hsl(var(--card))] card-subtle' },
         h('div', { className: 'flex items-center justify-between text-xs text-[hsl(var(--muted))]' },
           h('span', null, entry.type.toUpperCase()),
           h('div', { className: 'flex items-center gap-2' },
@@ -1366,9 +1385,9 @@ function LoginPage() {
       h('h1', { className: 'text-xl font-semibold text-center text-[hsl(var(--fg))]' }, 'Welcome back'),
       h('form', { onSubmit: submit, className: 'space-y-3' },
         h('input', { type: 'email', placeholder: 'Email', value: email, onChange: e => setEmail(e.target.value),
-          className: 'w-full bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-3 py-2.5 text-sm text-[hsl(var(--fg))] focus:border-[hsl(var(--primary))] focus:outline-none', required: true }),
+          className: 'w-full bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm text-[hsl(var(--fg))] focus:border-[hsl(var(--primary))] focus:outline-none transition-smooth', required: true }),
         h('input', { type: 'password', placeholder: 'Password', value: password, onChange: e => setPassword(e.target.value),
-          className: 'w-full bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-3 py-2.5 text-sm text-[hsl(var(--fg))] focus:border-[hsl(var(--primary))] focus:outline-none', required: true }),
+          className: 'w-full bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm text-[hsl(var(--fg))] focus:border-[hsl(var(--primary))] focus:outline-none transition-smooth', required: true }),
         error && h('p', { className: 'text-xs text-[hsl(0_72%_51%)]' }, error),
         h('button', { type: 'submit', disabled: loading,
           className: 'w-full bg-[hsl(var(--primary))] text-black font-medium rounded-lg px-3 py-2.5 text-sm hover:brightness-110 transition-all disabled:opacity-50 cursor-pointer' },
@@ -1466,7 +1485,7 @@ function ForgotPasswordPage() {
       h('h1', { className: 'text-xl font-semibold text-center text-[hsl(var(--fg))]' }, 'Reset your password'),
       h('form', { onSubmit: submit, className: 'space-y-3' },
         h('input', { type: 'email', placeholder: 'Email', value: email, onChange: e => setEmail(e.target.value),
-          className: 'w-full bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-3 py-2.5 text-sm text-[hsl(var(--fg))] focus:border-[hsl(var(--primary))] focus:outline-none', required: true }),
+          className: 'w-full bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm text-[hsl(var(--fg))] focus:border-[hsl(var(--primary))] focus:outline-none transition-smooth', required: true }),
         h('button', { type: 'submit', disabled: loading,
           className: 'w-full bg-[hsl(var(--primary))] text-black font-medium rounded-lg px-3 py-2.5 text-sm hover:brightness-110 transition-all disabled:opacity-50 cursor-pointer' },
           loading ? 'Sending...' : 'Send Reset Link')
@@ -1599,7 +1618,7 @@ function PricingPage() {
 }
 
 function App() {
-  const [darkMode, setDarkMode] = useState(true);
+  const [darkMode, setDarkMode] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeProject, setActiveProject] = useState(null);
   const [activeConv, setActiveConv] = useState(null);
@@ -1635,8 +1654,10 @@ function App() {
     : rightTab === 'compliance' ? h(CompliancePanel, { projectId: activeProject.id, key: activeProject.id })
     : rightTab === 'settings' ? h(SettingsPanel, { projectId: activeProject.id, key: activeProject.id })
     : null)
-    : h('div', { className: 'flex items-center justify-center h-full text-sm text-[hsl(var(--muted))]' },
-        'Select or create a project to get started'
+    : h('div', { className: 'flex flex-col items-center justify-center h-full gap-2 text-sm text-[hsl(var(--muted))]' },
+        h('div', { className: 'w-12 h-12 rounded-2xl bg-[hsl(var(--secondary))] flex items-center justify-center mb-2' }, h(Icon, { name: 'file', size: 22, className: 'text-[hsl(var(--muted))]' })),
+        h('p', { className: 'text-sm font-medium' }, 'Select or create a project'),
+        h('p', { className: 'text-xs' }, 'to get started')
       );
 
   const chatPanel = h(ChatPanel, {
