@@ -58,6 +58,7 @@ index_name = "vector-index"
 
 # ──────────────────────────────────────────
 # Workers AI (embeddings, vision, OCR)
+# ⚠️ FIX: Must be a simple object with binding property
 # ──────────────────────────────────────────
 [[ai]]
 binding = "AI"
@@ -71,12 +72,14 @@ id = "ba2abda5a6f5414a8fcb1de38bff9ac1"
 
 # ──────────────────────────────────────────
 # Workflows (background processing pipelines)
-# ⚠️ FIX: Use 'name' not 'script_name', no duplicate binding names
+# ⚠️ FIX: Both 'name' and 'class_name' fields are required
 # ──────────────────────────────────────────
 [[workflows]]
 binding = "DOCUMENT_INGESTION"
+class_name = "DocumentIngestionWorkflow"
 name = "DocumentIngestionWorkflow"
 
 [[workflows]]
 binding = "PROPOSAL_ANALYSIS"
+class_name = "ProposalAnalysisWorkflow"
 name = "ProposalAnalysisWorkflow"
