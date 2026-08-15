@@ -27,7 +27,6 @@ class_name = "ProjectDurableObject"
 
 # ──────────────────────────────────────────
 # D1 Database (relational metadata store)
-# Run: wrangler d1 create murry-ai-db
 # ──────────────────────────────────────────
 [[env.production.d1_databases]]
 binding = "DB"
@@ -36,7 +35,6 @@ database_id = "927bd55a77a1bc0a9c344ec45a6eed7e"
 
 # ──────────────────────────────────────────
 # R2 Bucket (document storage)
-# Run: wrangler r2 bucket create murry-ai-documents
 # ──────────────────────────────────────────
 [[r2_buckets]]
 binding = "R2"
@@ -44,7 +42,6 @@ bucket_name = "highstreet-it"
 
 # ──────────────────────────────────────────
 # Vectorize (semantic vector search)
-# Run: wrangler vectorize create murry-ai-vectors --dimensions=768 --metric=cosine
 # ──────────────────────────────────────────
 [[vectorize]]
 binding = "VECTORIZE"
@@ -58,7 +55,6 @@ binding = "AI"
 
 # ──────────────────────────────────────────
 # KV Namespace (caching & session state)
-# Run: wrangler kv namespace create murry-ai-cache
 # ──────────────────────────────────────────
 [[kv_namespaces]]
 binding = "KV_CACHE"
@@ -69,8 +65,8 @@ id = "ba2abda5a6f5414a8fcb1de38bff9ac1"
 # ──────────────────────────────────────────
 [[workflows]]
 binding = "DOCUMENT_INGESTION"
-script_name = "DocumentIngestionWorkflow"
+name = "DocumentIngestionWorkflow"
 
 [[workflows]]
 binding = "PROPOSAL_ANALYSIS"
-script_name = "ProposalAnalysisWorkflow"
+name = "ProposalAnalysisWorkflow"
