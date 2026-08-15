@@ -25,6 +25,15 @@ class_name = "ConversationDurableObject"
 name = "PROJECT_DO"
 class_name = "ProjectDurableObject"
 
+# Required EXports section for Durable Objects
+[exports.ConversationDurableObject]
+type = "durable-object"
+storage = "sqlite"
+
+[exports.ProjectDurableObject]
+type = "durable-object"
+storage = "sqlite"
+
 # ──────────────────────────────────────────
 # D1 Database (relational metadata store)
 # ──────────────────────────────────────────
@@ -62,6 +71,7 @@ id = "ba2abda5a6f5414a8fcb1de38bff9ac1"
 
 # ──────────────────────────────────────────
 # Workflows (background processing pipelines)
+# ⚠️ FIX: Use 'name' not 'script_name', no duplicate binding names
 # ──────────────────────────────────────────
 [[workflows]]
 binding = "DOCUMENT_INGESTION"
