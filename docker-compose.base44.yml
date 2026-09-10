@@ -1,0 +1,12 @@
+services:
+  app:
+    image: node:22
+    working_dir: /app
+    volumes:
+      - .:/app
+    ports:
+      - "3000:3000"
+    env_file:
+      - /run/base44/app.env
+    command: bash scripts/dev-startup.sh
+    restart: unless-stopped
